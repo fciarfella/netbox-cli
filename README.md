@@ -174,6 +174,7 @@ Common first commands:
 netbox config test
 netbox list
 netbox list dcim
+netbox list dcim/devices
 netbox filters dcim/devices
 netbox list dcim/devices status=active
 netbox list dcim/devices q=router01 --cols name,site,status
@@ -183,18 +184,12 @@ netbox search router01 --cols id,name,site,status
 
 ## CLI Examples
 
-Discover apps and endpoints:
+Explore progressively with `list`:
 
 ```bash
 netbox list
 netbox list dcim
-```
-
-Compatibility commands remain available:
-
-```bash
-netbox apps
-netbox endpoints dcim
+netbox list dcim/devices
 ```
 
 Inspect endpoint filters and known choices:
@@ -208,6 +203,7 @@ List rows from an endpoint:
 ```bash
 netbox list
 netbox list dcim
+netbox list dcim/devices
 netbox list dcim/devices status=active
 netbox list dcim/devices router01
 netbox list dcim/devices router 01
@@ -220,7 +216,7 @@ netbox list dcim/devices q=router01 --cols name,site,status
 netbox list plugins/netbox_dns/records q=198.51.100.10 --cols zone,name,type,value,status
 ```
 
-The CLI `list` command follows the same exploration flow and shorthand as the shell:
+The CLI `list` command is the canonical exploration flow and follows the same shorthand as the shell:
 
 ```bash
 netbox list
@@ -257,7 +253,7 @@ netbox search router01 --cols id,name,site,status
 
 Use `netbox search <term>` when you want a broad search across multiple object types.
 
-Use `netbox list` to explore progressively:
+Use `netbox list` as the single exploration command:
 
 - `netbox list` shows top-level apps
 - `netbox list <app>` shows endpoints for that app

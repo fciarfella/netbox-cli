@@ -29,9 +29,12 @@ def test_cli_help_bootstraps(cli_runner) -> None:
 
     assert result.exit_code == 0
     assert "Read-only NetBox CLI" in result.stdout
+    assert "list" in result.stdout
     assert "init" in result.stdout
     assert "cache" in result.stdout
     assert "shell" in result.stdout
+    assert "\n│ apps" not in result.stdout
+    assert "\n│ endpoints" not in result.stdout
 
 
 def test_cli_version_flag_bootstraps(cli_runner) -> None:
@@ -92,70 +95,14 @@ def test_shell_command_launches_repl(cli_runner, monkeypatch, tmp_path: Path) ->
     assert launched["initial_state"].current_path == "/"  # type: ignore[union-attr]
 
 
-def test_apps_command_renders_json(cli_runner, monkeypatch) -> None:
-    from netbox_cli import app as app_module
+def test_legacy_exploration_commands_are_unavailable(cli_runner) -> None:
+    apps_result = cli_runner.invoke(cli, ["apps"])
+    endpoints_result = cli_runner.invoke(cli, ["endpoints", "dcim"])
 
-    monkeypatch.setattr(
-        app_module,
-        "_build_runtime",
-        lambda: (
-            AppPaths(
-                config_dir=Path("/tmp/config"),
-                config_path=Path("/tmp/config/config.toml"),
-                cache_dir=Path("/tmp/cache"),
-                history_dir=Path("/tmp/state"),
-                history_path=Path("/tmp/state/shell-history"),
-            ),
-            LoadedSettings(
-                settings=NetBoxSettings(url="https://netbox.example.com", token="abc"),
-                source="file",
-            ),
-            object(),
-        ),
-    )
-    monkeypatch.setattr(app_module, "list_apps", lambda client: ["dcim", "ipam"])
-
-    result = cli_runner.invoke(cli, ["apps", "--format", "json"])
-
-    assert result.exit_code == 0
-    assert json.loads(result.stdout) == ["dcim", "ipam"]
-
-
-def test_endpoints_command_renders_json(cli_runner, monkeypatch) -> None:
-    from netbox_cli import app as app_module
-
-    monkeypatch.setattr(
-        app_module,
-        "_build_runtime",
-        lambda: (
-            AppPaths(
-                config_dir=Path("/tmp/config"),
-                config_path=Path("/tmp/config/config.toml"),
-                cache_dir=Path("/tmp/cache"),
-                history_dir=Path("/tmp/state"),
-                history_path=Path("/tmp/state/shell-history"),
-            ),
-            LoadedSettings(
-                settings=NetBoxSettings(url="https://netbox.example.com", token="abc"),
-                source="file",
-            ),
-            object(),
-        ),
-    )
-    monkeypatch.setattr(
-        app_module,
-        "list_endpoints",
-        lambda client, app_name: [
-            type("Endpoint", (), {"app": app_name, "endpoint": "devices", "path": "dcim/devices", "url": "https://netbox.example.com/api/dcim/devices/"})(),
-            type("Endpoint", (), {"app": app_name, "endpoint": "sites", "path": "dcim/sites", "url": "https://netbox.example.com/api/dcim/sites/"})(),
-        ],
-    )
-
-    result = cli_runner.invoke(cli, ["endpoints", "dcim", "--format", "json"])
-
-    assert result.exit_code == 0
-    payload = json.loads(result.stdout)
-    assert [item["path"] for item in payload] == ["dcim/devices", "dcim/sites"]
+    assert apps_result.exit_code != 0
+    assert "No such command 'apps'" in apps_result.output
+    assert endpoints_result.exit_code != 0
+    assert "No such command 'endpoints'" in endpoints_result.output
 
 
 def test_list_command_without_path_renders_apps(cli_runner, monkeypatch) -> None:
@@ -223,6 +170,50 @@ def test_list_command_with_app_path_renders_endpoints(cli_runner, monkeypatch) -
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert [item["path"] for item in payload] == ["dcim/devices", "dcim/sites"]
+
+
+def test_list_command_with_endpoint_path_renders_records(cli_runner, monkeypatch) -> None:
+    from netbox_cli import app as app_module
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        app_module,
+        "_build_runtime",
+        lambda: (
+            AppPaths(
+                config_dir=Path("/tmp/config"),
+                config_path=Path("/tmp/config/config.toml"),
+                cache_dir=Path("/tmp/cache"),
+                history_dir=Path("/tmp/state"),
+                history_path=Path("/tmp/state/shell-history"),
+            ),
+            LoadedSettings(
+                settings=NetBoxSettings(url="https://netbox.example.com", token="abc"),
+                source="file",
+            ),
+            object(),
+        ),
+    )
+    patch_list_resolution(monkeypatch, app_module, kind="endpoint", path="dcim/devices")
+    monkeypatch.setattr(
+        app_module,
+        "list_records",
+        lambda client, endpoint_path, filters, limit: captured.update(
+            {"endpoint_path": endpoint_path, "filters": filters, "limit": limit}
+        ) or QueryResult(
+            endpoint_path=endpoint_path,
+            rows=[{"id": 1, "name": "leaf-01"}],
+            total_count=1,
+        ),
+    )
+
+    result = cli_runner.invoke(cli, ["list", "dcim/devices", "--format", "json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["endpoint_path"] == "dcim/devices"
+    assert payload["results"][0]["name"] == "leaf-01"
+    assert captured["filters"] == []
 
 
 def test_list_command_rejects_unknown_path(cli_runner, monkeypatch) -> None:

@@ -185,47 +185,6 @@ def cache_clear_command() -> None:
     print_success(f"Cleared {removed_files} cache file(s) from {paths.cache_dir}.")
 
 
-@cli.command("apps")
-def apps_command(
-    output_format: Annotated[
-        CLIOutputFormat | None,
-        typer.Option("--format", "-f", help="Output format."),
-    ] = None,
-) -> None:
-    """List top-level NetBox apps. `netbox list` is the preferred exploration command."""
-
-    try:
-        _, loaded, client = _build_runtime()
-        apps = list_apps(client)
-        render_apps(
-            apps,
-            _resolve_output_format(output_format, loaded.settings.default_format),
-        )
-    except NetBoxCLIError as exc:
-        _exit_with_error(exc)
-
-
-@cli.command("endpoints")
-def endpoints_command(
-    app_name: Annotated[str, typer.Argument(help="NetBox app name, for example dcim.")],
-    output_format: Annotated[
-        CLIOutputFormat | None,
-        typer.Option("--format", "-f", help="Output format."),
-    ] = None,
-) -> None:
-    """List endpoints for a NetBox app. `netbox list <app>` is the preferred exploration command."""
-
-    try:
-        _, loaded, client = _build_runtime()
-        endpoints = list_endpoints(client, app_name)
-        render_endpoints(
-            endpoints,
-            _resolve_output_format(output_format, loaded.settings.default_format),
-        )
-    except NetBoxCLIError as exc:
-        _exit_with_error(exc)
-
-
 @cli.command("filters")
 def filters_command(
     endpoint_path: Annotated[
