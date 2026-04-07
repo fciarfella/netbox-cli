@@ -9,6 +9,7 @@ from typing import Any, TypeAlias
 
 import httpx
 
+from . import __version__
 from .cache import MetadataCache
 from .errors import (
     APIError,
@@ -82,7 +83,7 @@ class NetBoxClient:
         headers = {
             "Accept": "application/json",
             "Authorization": f"Token {self.settings.token}",
-            "User-Agent": "netbox-cli/0.1.0",
+            "User-Agent": f"netbox-cli/{__version__}",
         }
 
         try:

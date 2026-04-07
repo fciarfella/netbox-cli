@@ -62,10 +62,10 @@ python3 -m pip install "git+https://github.com/fciarfella/netbox-cli.git"
 
 ### Install a tagged release from GitHub
 
-Use a tagged release when you want a specific published GitHub version, such as `v0.1.2`.
+Use a tagged release when you want a specific published GitHub version, such as `v0.2.0`.
 
 ```bash
-python3 -m pip install "git+https://github.com/fciarfella/netbox-cli.git@v0.1.2"
+python3 -m pip install "git+https://github.com/fciarfella/netbox-cli.git@v0.2.0"
 ```
 
 ### Install from a local clone

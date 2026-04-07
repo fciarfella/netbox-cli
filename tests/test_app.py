@@ -21,7 +21,7 @@ def patch_list_resolution(monkeypatch, app_module, *, kind: str, path: str | Non
 
 
 def test_package_import_exposes_version() -> None:
-    assert __version__ == "0.1.0"
+    assert __version__ == "0.2.0"
 
 
 def test_cli_help_bootstraps(cli_runner) -> None:
