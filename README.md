@@ -1,10 +1,13 @@
 # NetBox CLI
 
+[![PyPI](https://img.shields.io/pypi/v/netbox-explorer.svg)](https://pypi.org/project/netbox-explorer/)
+[![License](https://img.shields.io/github/license/fciarfella/netbox-cli.svg)](https://github.com/fciarfella/netbox-cli/blob/main/LICENSE)
+
 ## What It Is
 
 `netbox-cli` is a read-only Python CLI for NetBox.
 
-The package is published on PyPI as `netbox-explorer`, while the installed command remains `netbox`.
+Published on PyPI as `netbox-explorer`. Installed command: `netbox`.
 
 It provides two aligned interfaces:
 
@@ -59,10 +62,10 @@ python3 -m pip install "git+https://github.com/fciarfella/netbox-cli.git"
 
 ### Install a tagged release from GitHub
 
-Use a tagged release when you want a specific published version from GitHub.
+Use a tagged release when you want a specific published GitHub version, such as `v0.1.2`.
 
 ```bash
-python3 -m pip install "git+https://github.com/fciarfella/netbox-cli.git@v0.1.0"
+python3 -m pip install "git+https://github.com/fciarfella/netbox-cli.git@v0.1.2"
 ```
 
 ### Install from a local clone
@@ -214,7 +217,7 @@ netbox list dcim/devices status=active status=offline
 netbox list dcim/devices q=router01
 netbox list dcim/devices name__ic=router
 netbox list dcim/devices q=router01 --cols name,site,status
-netbox list plugins/netbox-dns/records q=198.51.100.10 --cols zone,name,type,value,status
+netbox list plugins/netbox_dns/records q=198.51.100.10 --cols zone,name,type,value,status
 ```
 
 The CLI `list` command follows the same exploration flow and shorthand as the shell:
@@ -260,7 +263,7 @@ Use `netbox list` to explore progressively:
 - `netbox list <app>` shows endpoints for that app
 - `netbox list <app>/<endpoint>` lists records from that endpoint
 
-Use `netbox list <endpoint> q=<term>` when you already know the endpoint you want to search inside.
+Use `netbox list <app>/<endpoint> q=<term>` when you already know the endpoint you want to search inside.
 
 Examples:
 
@@ -405,7 +408,7 @@ Inspection:
 ```text
 filters
 list [term] [k=v ...]
-get [k=v ...]
+get k=v [...]
 search <term>
 open <index>
 ```
