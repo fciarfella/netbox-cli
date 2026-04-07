@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "netbox-cli"
+name = "netbox-explorer"
 version = "0.1.0"
 description = "Read-only NetBox CLI with a classic command surface and an interactive shell."
 readme = "README.md"

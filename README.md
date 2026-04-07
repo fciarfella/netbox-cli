@@ -4,6 +4,8 @@
 
 `netbox-cli` is a read-only Python CLI for NetBox.
 
+The package is published on PyPI as `netbox-explorer`, while the installed command remains `netbox`.
+
 It provides two aligned interfaces:
 
 - a standard command line for automation, documentation, and copy/paste use
@@ -32,6 +34,17 @@ The shell is a convenience layer on top of it.
 ## Install
 
 Using a virtual environment is the recommended install path.
+
+### Install from PyPI
+
+Use this for the normal published package install.
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install --upgrade pip
+python3 -m pip install netbox-explorer
+```
 
 ### Install from GitHub
 
