@@ -2,7 +2,7 @@
 
 ## What It Is
 
-`netbox` is a read-only Python CLI for NetBox.
+`netbox-cli` is a read-only Python CLI for NetBox.
 
 It provides two aligned interfaces:
 

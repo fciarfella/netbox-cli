@@ -1,0 +1,10 @@
+/venv/
+.venv/
+.DS_Store
+.python-version
+__pycache__/
+.pytest_cache/
+.coverage
+build/
+dist/
+*.egg-info/
