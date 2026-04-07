@@ -35,11 +35,19 @@ def test_get_api_root_uses_auth_headers_and_cache(netbox_settings, metadata_cach
 
 @respx.mock
 def test_get_schema_falls_back_and_uses_cache(netbox_settings, metadata_cache) -> None:
-    openapi_route = respx.get("https://netbox.example.com/api/schema/?format=openapi").mock(
-        return_value=httpx.Response(404)
-    )
-    json_route = respx.get("https://netbox.example.com/api/schema/?format=json").mock(
-        return_value=httpx.Response(200, json={"paths": {}})
+    requested_formats: list[str] = []
+
+    def schema_response(request: httpx.Request) -> httpx.Response:
+        schema_format = request.url.params.get("format")
+        requested_formats.append(str(schema_format))
+        if schema_format == "openapi":
+            return httpx.Response(404)
+        if schema_format == "json":
+            return httpx.Response(200, json={"paths": {}})
+        raise AssertionError(f"Unexpected schema format: {schema_format!r}")
+
+    schema_route = respx.get("https://netbox.example.com/api/schema/").mock(
+        side_effect=schema_response
     )
     client = NetBoxClient(netbox_settings, metadata_cache=metadata_cache)
 
@@ -48,8 +56,8 @@ def test_get_schema_falls_back_and_uses_cache(netbox_settings, metadata_cache) -
 
     assert first == {"paths": {}}
     assert second == first
-    assert openapi_route.call_count == 1
-    assert json_route.call_count == 1
+    assert schema_route.call_count == 2
+    assert requested_formats == ["openapi", "json"]
 
 
 @respx.mock
@@ -113,16 +121,22 @@ def test_connection_error_raises_structured_error(netbox_settings) -> None:
 
 @respx.mock
 def test_schema_endpoint_missing_raises_api_error(netbox_settings) -> None:
-    respx.get("https://netbox.example.com/api/schema/?format=openapi").mock(
-        return_value=httpx.Response(404)
-    )
-    respx.get("https://netbox.example.com/api/schema/?format=json").mock(
-        return_value=httpx.Response(404)
+    requested_formats: list[str] = []
+
+    def schema_response(request: httpx.Request) -> httpx.Response:
+        schema_format = request.url.params.get("format")
+        requested_formats.append(str(schema_format))
+        return httpx.Response(404)
+
+    schema_route = respx.get("https://netbox.example.com/api/schema/").mock(
+        side_effect=schema_response
     )
     client = NetBoxClient(netbox_settings)
 
     with pytest.raises(APIError):
         client.get_schema(use_cache=False)
+    assert schema_route.call_count == 2
+    assert requested_formats == ["openapi", "json"]
 
 
 @respx.mock

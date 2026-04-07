@@ -260,7 +260,7 @@ def test_list_command_rejects_unknown_path(cli_runner, monkeypatch) -> None:
     result = cli_runner.invoke(cli, ["list", "unknown"])
 
     assert result.exit_code != 0
-    assert "Unknown NetBox path: unknown." in result.stdout
+    assert "Unknown NetBox path: unknown." in result.stderr
 
 
 def test_list_command_renders_json(cli_runner, monkeypatch) -> None:
@@ -340,7 +340,8 @@ def test_list_command_rejects_incomplete_filter_locally(cli_runner, monkeypatch)
     result = cli_runner.invoke(cli, ["list", "dcim/devices", "status="])
 
     assert result.exit_code != 0
-    assert "Incomplete filter: status=. Choose a value or remove the filter." in result.stdout
+    assert "Invalid value:" in result.stderr
+    assert "Incomplete filter: status=." in result.stderr
 
 
 def test_list_command_passes_cols_override(cli_runner, monkeypatch) -> None:

@@ -12,7 +12,10 @@ from netbox_cli.query import get_record, list_records
 
 @respx.mock
 def test_list_records_handles_paginated_responses(netbox_settings, metadata_cache) -> None:
-    schema_route = respx.get("https://netbox.example.com/api/schema/?format=openapi").mock(
+    schema_route = respx.get(
+        "https://netbox.example.com/api/schema/",
+        params__contains={"format": "openapi"},
+    ).mock(
         return_value=httpx.Response(
             200,
             json={
@@ -35,36 +38,40 @@ def test_list_records_handles_paginated_responses(netbox_settings, metadata_cach
     options_route = respx.options("https://netbox.example.com/api/dcim/devices/").mock(
         return_value=httpx.Response(200, json={"actions": {"POST": {}}})
     )
-    first_page = respx.get(
-        "https://netbox.example.com/api/dcim/devices/",
-        params__contains={"status": "active", "limit": "5", "offset": "0"},
-    ).mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "count": 3,
-                "next": "https://netbox.example.com/api/dcim/devices/?limit=2&offset=2",
-                "results": [
-                    {"id": 1, "name": "leaf-01"},
-                    {"id": 2, "name": "leaf-02"},
-                ],
-            },
-        )
-    )
-    second_page = respx.get(
-        "https://netbox.example.com/api/dcim/devices/",
-        params__contains={"status": "active", "limit": "3", "offset": "2"},
-    ).mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "count": 3,
-                "next": None,
-                "results": [
-                    {"id": 3, "name": "leaf-03"},
-                ],
-            },
-        )
+
+    def paginated_devices_response(request: httpx.Request) -> httpx.Response:
+        params = request.url.params
+        assert params.get("status") == "active"
+
+        if params.get("limit") == "5" and params.get("offset") == "0":
+            return httpx.Response(
+                200,
+                json={
+                    "count": 3,
+                    "next": "https://netbox.example.com/api/dcim/devices/?limit=2&offset=2",
+                    "results": [
+                        {"id": 1, "name": "leaf-01"},
+                        {"id": 2, "name": "leaf-02"},
+                    ],
+                },
+            )
+
+        if params.get("limit") == "3" and params.get("offset") == "2":
+            return httpx.Response(
+                200,
+                json={
+                    "count": 3,
+                    "next": None,
+                    "results": [
+                        {"id": 3, "name": "leaf-03"},
+                    ],
+                },
+            )
+
+        raise AssertionError(f"Unexpected pagination request params: {dict(params.multi_items())}")
+
+    paginated_route = respx.get("https://netbox.example.com/api/dcim/devices/").mock(
+        side_effect=paginated_devices_response
     )
     client = NetBoxClient(netbox_settings, metadata_cache=metadata_cache)
 
@@ -74,8 +81,7 @@ def test_list_records_handles_paginated_responses(netbox_settings, metadata_cach
     assert [row["name"] for row in result.rows] == ["leaf-01", "leaf-02", "leaf-03"]
     assert schema_route.call_count == 1
     assert options_route.call_count == 1
-    assert first_page.call_count == 1
-    assert second_page.call_count == 1
+    assert paginated_route.call_count == 2
 
 
 @respx.mock

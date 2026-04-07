@@ -239,7 +239,7 @@ class CompletionMetadataProvider:
             )
         )
 
-        return _dedupe_suggestions(suggestions)[:MAX_VALUE_SUGGESTIONS]
+        return tuple(_dedupe_suggestions(suggestions)[:MAX_VALUE_SUGGESTIONS])
 
     def _static_choice_suggestions(
         self,
@@ -366,12 +366,10 @@ class CompletionMetadataProvider:
                 suggestion = _build_related_value_suggestion(row, lookup_spec)
                 if suggestion is None:
                     continue
-                if not _suggestion_matches_prefix(suggestion, prefix):
-                    continue
                 suggestions.append(suggestion)
 
             if suggestions:
-                return _dedupe_suggestions(suggestions)[: lookup_spec.max_suggestions]
+                return tuple(_dedupe_suggestions(suggestions)[: lookup_spec.max_suggestions])
 
         return ()
 
@@ -463,16 +461,6 @@ def _dedupe_suggestions(
         seen.add(key)
         deduped.append(suggestion)
     return deduped
-
-
-def _suggestion_matches_prefix(suggestion: FilterValueSuggestion, prefix: str) -> bool:
-    if not prefix:
-        return True
-    if _text_matches_prefix(suggestion.value, prefix):
-        return True
-    if suggestion.label and _text_matches_prefix(suggestion.label, prefix):
-        return True
-    return False
 
 
 def _text_matches_prefix(value: str, prefix: str) -> bool:

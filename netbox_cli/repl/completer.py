@@ -93,9 +93,12 @@ class NetBoxShellCompleter(Completer):
             return
 
         path_context = _resolve_path_completion_context(self.state, prefix)
-        child_segments = self.metadata_provider.get_child_segments(
-            path_context.parent_service_path
-        )
+        if not path_context.parent_service_path:
+            child_segments = self.metadata_provider.get_apps()
+        else:
+            child_segments = self.metadata_provider.get_child_segments(
+                path_context.parent_service_path
+            )
 
         if not prefix and not path_context.display_prefix and self.state.current_path != ROOT_PATH:
             yield Completion("..", start_position=0)

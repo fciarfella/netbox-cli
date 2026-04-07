@@ -33,7 +33,7 @@ def create_console(
     stream = file if file is not None else (sys.stderr if stderr else sys.stdout)
     is_tty = _stream_is_tty(stream)
     use_styling = is_tty and not bool(force_plain)
-    return Console(
+    console = Console(
         file=stream,
         stderr=stderr,
         force_terminal=use_styling,
@@ -41,6 +41,16 @@ def create_console(
         no_color=not use_styling,
         width=width,
     )
+    if use_styling and console.color_system is None:
+        console = Console(
+            file=stream,
+            stderr=stderr,
+            force_terminal=True,
+            color_system="standard",
+            no_color=False,
+            width=width,
+        )
+    return console
 
 
 def get_stdout_console(*, force_plain: bool | None = None) -> Console:
