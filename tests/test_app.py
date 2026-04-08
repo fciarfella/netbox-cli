@@ -87,7 +87,7 @@ def patch_runtime(  # type: ignore[no-untyped-def]
 
 
 def test_package_import_exposes_version() -> None:
-    assert __version__ == "0.3.0"
+    assert __version__ == "0.4.1"
 
 
 def test_cli_help_bootstraps(cli_runner) -> None:
