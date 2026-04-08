@@ -74,6 +74,7 @@ class NetBoxClient:
         path: str,
         *,
         params: QueryParamsInput | None = None,
+        json_body: Any | None = None,
     ) -> httpx.Response:
         """Perform an authenticated API request."""
 
@@ -93,6 +94,7 @@ class NetBoxClient:
                     url,
                     headers=headers,
                     params=request_params,
+                    json=json_body,
                 )
             else:
                 with httpx.Client(
@@ -105,6 +107,7 @@ class NetBoxClient:
                         url,
                         headers=headers,
                         params=request_params,
+                        json=json_body,
                     )
         except httpx.TimeoutException as exc:
             raise NetBoxConnectionError(
@@ -124,10 +127,11 @@ class NetBoxClient:
         path: str,
         *,
         params: QueryParamsInput | None = None,
+        json_body: Any | None = None,
     ) -> Any:
         """Perform a request and decode the JSON response body."""
 
-        response = self.request(method, path, params=params)
+        response = self.request(method, path, params=params, json_body=json_body)
         try:
             return response.json()
         except ValueError as exc:
@@ -137,6 +141,16 @@ class NetBoxClient:
         """Perform an authenticated GET request and decode JSON."""
 
         return self.request_json("GET", path, params=params)
+
+    def post_json(self, path: str, *, json_body: Any) -> Any:
+        """Perform an authenticated POST request and decode JSON."""
+
+        return self.request_json("POST", path, json_body=json_body)
+
+    def patch_json(self, path: str, *, json_body: Any) -> Any:
+        """Perform an authenticated PATCH request and decode JSON."""
+
+        return self.request_json("PATCH", path, json_body=json_body)
 
     def get_api_root(self, *, use_cache: bool = True) -> dict[str, str]:
         """Return the API root app mapping."""
@@ -273,7 +287,8 @@ class NetBoxClient:
         path_display = path.strip("/") or "API root"
         if response.status_code == 400:
             details = self._extract_error_details(response)
-            message = f"NetBox rejected request parameters for {method} {path_display}"
+            subject = "request parameters" if method == "GET" else "request data"
+            message = f"NetBox rejected {subject} for {method} {path_display}"
             if details:
                 message = f"{message}: {details}"
             else:

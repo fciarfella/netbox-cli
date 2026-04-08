@@ -20,16 +20,51 @@ def patch_list_resolution(monkeypatch, app_module, *, kind: str, path: str | Non
     )
 
 
+def patch_runtime(  # type: ignore[no-untyped-def]
+    monkeypatch,
+    app_module,
+    *,
+    client=None,
+    default_format: str = "table",
+):
+    runtime_client = object() if client is None else client
+    monkeypatch.setattr(
+        app_module,
+        "_build_runtime",
+        lambda: (
+            AppPaths(
+                config_dir=Path("/tmp/config"),
+                config_path=Path("/tmp/config/config.toml"),
+                cache_dir=Path("/tmp/cache"),
+                history_dir=Path("/tmp/state"),
+                history_path=Path("/tmp/state/shell-history"),
+            ),
+            LoadedSettings(
+                settings=NetBoxSettings(
+                    url="https://netbox.example.com",
+                    token="abc",
+                    default_format=default_format,  # type: ignore[arg-type]
+                ),
+                source="file",
+            ),
+            runtime_client,
+        ),
+    )
+    return runtime_client
+
+
 def test_package_import_exposes_version() -> None:
-    assert __version__ == "0.2.0"
+    assert __version__ == "0.3.0"
 
 
 def test_cli_help_bootstraps(cli_runner) -> None:
     result = cli_runner.invoke(cli, ["--help"])
 
     assert result.exit_code == 0
-    assert "Read-only NetBox CLI" in result.stdout
+    assert "NetBox CLI for discovery" in result.stdout
     assert "list" in result.stdout
+    assert "create" in result.stdout
+    assert "update" in result.stdout
     assert "init" in result.stdout
     assert "cache" in result.stdout
     assert "shell" in result.stdout
@@ -793,6 +828,416 @@ def test_get_command_renders_json(cli_runner, monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert json.loads(result.stdout)["name"] == "leaf-01"
+
+
+def test_create_command_with_inline_payload(cli_runner, monkeypatch) -> None:
+    from netbox_cli import app as app_module
+
+    captured: dict[str, object] = {}
+    runtime_client = patch_runtime(monkeypatch, app_module)
+    monkeypatch.setattr(
+        app_module,
+        "create_record",
+        lambda client, request: captured.update(
+            {"client": client, "request": request}
+        ) or RecordResult(
+            endpoint_path=request.endpoint_path,
+            row={"id": 1, "name": "leaf-01", "status": "active"},
+        ),
+    )
+
+    result = cli_runner.invoke(
+        cli,
+        ["create", "dcim/devices", "name=leaf-01", "status=active", "--format", "json"],
+    )
+
+    assert result.exit_code == 0
+    request = captured["request"]
+    assert captured["client"] is runtime_client
+    assert request.method == "POST"  # type: ignore[union-attr]
+    assert request.endpoint_path == "dcim/devices"  # type: ignore[union-attr]
+    assert request.payload == {"name": "leaf-01", "status": "active"}  # type: ignore[union-attr]
+    assert json.loads(result.stdout)["name"] == "leaf-01"
+
+
+def test_create_command_with_json_file(cli_runner, monkeypatch, tmp_path: Path) -> None:
+    from netbox_cli import app as app_module
+
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_text('{"name": "leaf-01", "status": "active"}', encoding="utf-8")
+
+    captured: dict[str, object] = {}
+    patch_runtime(monkeypatch, app_module)
+    monkeypatch.setattr(
+        app_module,
+        "create_record",
+        lambda client, request: captured.update({"request": request}) or RecordResult(
+            endpoint_path=request.endpoint_path,
+            row={"id": 1, "name": "leaf-01", "status": "active"},
+        ),
+    )
+
+    result = cli_runner.invoke(
+        cli,
+        ["create", "dcim/devices", "--file", str(payload_path), "--format", "json"],
+    )
+
+    assert result.exit_code == 0
+    request = captured["request"]
+    assert request.payload == {"name": "leaf-01", "status": "active"}  # type: ignore[union-attr]
+    assert json.loads(result.stdout)["status"] == "active"
+
+
+def test_create_command_with_yaml_file(cli_runner, monkeypatch, tmp_path: Path) -> None:
+    from netbox_cli import app as app_module
+
+    payload_path = tmp_path / "payload.yaml"
+    payload_path.write_text("name: leaf-01\nstatus: active\n", encoding="utf-8")
+
+    captured: dict[str, object] = {}
+    patch_runtime(monkeypatch, app_module)
+    monkeypatch.setattr(
+        app_module,
+        "create_record",
+        lambda client, request: captured.update({"request": request}) or RecordResult(
+            endpoint_path=request.endpoint_path,
+            row={"id": 1, "name": "leaf-01", "status": "active"},
+        ),
+    )
+
+    result = cli_runner.invoke(
+        cli,
+        ["create", "dcim/devices", "--file", str(payload_path), "--format", "json"],
+    )
+
+    assert result.exit_code == 0
+    request = captured["request"]
+    assert request.payload == {"name": "leaf-01", "status": "active"}  # type: ignore[union-attr]
+    assert json.loads(result.stdout)["name"] == "leaf-01"
+
+
+def test_create_command_rejects_missing_payload(cli_runner) -> None:
+    result = cli_runner.invoke(cli, ["create", "dcim/devices"])
+
+    assert result.exit_code != 0
+    assert "Choose exactly one payload input method" in result.stderr
+
+
+def test_create_command_rejects_inline_id_field(cli_runner) -> None:
+    result = cli_runner.invoke(
+        cli,
+        ["create", "dcim/devices", "id=1", "name=leaf-01"],
+    )
+
+    assert result.exit_code != 0
+    assert "Create does not accept id=<id> as an inline field." in result.stderr
+
+
+def test_create_command_rejects_inline_payload_with_file(cli_runner, tmp_path: Path) -> None:
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_text('{"name": "leaf-01"}', encoding="utf-8")
+
+    result = cli_runner.invoke(
+        cli,
+        ["create", "dcim/devices", "name=leaf-01", "--file", str(payload_path)],
+    )
+
+    assert result.exit_code != 0
+    assert "Choose exactly one payload input method" in result.stderr
+
+
+def test_create_command_rejects_invalid_file_path(cli_runner, tmp_path: Path) -> None:
+    missing_path = tmp_path / "missing.json"
+
+    result = cli_runner.invoke(
+        cli,
+        ["create", "dcim/devices", "--file", str(missing_path)],
+    )
+
+    assert result.exit_code != 0
+    assert "Invalid file path" in result.stderr
+
+
+def test_create_command_rejects_invalid_json_file(cli_runner, tmp_path: Path) -> None:
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_text("{broken", encoding="utf-8")
+
+    result = cli_runner.invoke(
+        cli,
+        ["create", "dcim/devices", "--file", str(payload_path)],
+    )
+
+    assert result.exit_code != 0
+    assert "Invalid JSON" in result.stderr
+
+
+def test_create_command_rejects_invalid_yaml_file(cli_runner, tmp_path: Path) -> None:
+    payload_path = tmp_path / "payload.yaml"
+    payload_path.write_text("name: [broken\n", encoding="utf-8")
+
+    result = cli_runner.invoke(
+        cli,
+        ["create", "dcim/devices", "--file", str(payload_path)],
+    )
+
+    assert result.exit_code != 0
+    assert "Invalid YAML" in result.stderr
+
+
+def test_create_command_rejects_unsupported_file_extension(cli_runner, tmp_path: Path) -> None:
+    payload_path = tmp_path / "payload.txt"
+    payload_path.write_text("name=leaf-01", encoding="utf-8")
+
+    result = cli_runner.invoke(
+        cli,
+        ["create", "dcim/devices", "--file", str(payload_path)],
+    )
+
+    assert result.exit_code != 0
+    assert "Unsupported payload file extension" in result.stderr
+
+
+def test_update_command_with_id_and_inline_payload(cli_runner, monkeypatch) -> None:
+    from netbox_cli import app as app_module
+
+    captured: dict[str, object] = {}
+    runtime_client = patch_runtime(monkeypatch, app_module)
+    monkeypatch.setattr(
+        app_module,
+        "update_record",
+        lambda client, request: captured.update(
+            {"client": client, "request": request}
+        ) or RecordResult(
+            endpoint_path=request.endpoint_path,
+            row={"id": 1, "name": "leaf-01", "status": "active"},
+        ),
+    )
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "update",
+            "dcim/devices",
+            "id=1",
+            "name=leaf-01",
+            "status=active",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    request = captured["request"]
+    assert captured["client"] is runtime_client
+    assert request.method == "PATCH"  # type: ignore[union-attr]
+    assert request.object_id == "1"  # type: ignore[union-attr]
+    assert request.payload == {"name": "leaf-01", "status": "active"}  # type: ignore[union-attr]
+    assert json.loads(result.stdout)["id"] == 1
+
+
+def test_update_command_with_json_file(cli_runner, monkeypatch, tmp_path: Path) -> None:
+    from netbox_cli import app as app_module
+
+    payload_path = tmp_path / "patch.json"
+    payload_path.write_text('{"status": "active"}', encoding="utf-8")
+
+    captured: dict[str, object] = {}
+    patch_runtime(monkeypatch, app_module)
+    monkeypatch.setattr(
+        app_module,
+        "update_record",
+        lambda client, request: captured.update({"request": request}) or RecordResult(
+            endpoint_path=request.endpoint_path,
+            row={"id": 1, "name": "leaf-01", "status": "active"},
+        ),
+    )
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "update",
+            "dcim/devices",
+            "id=1",
+            "--file",
+            str(payload_path),
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    request = captured["request"]
+    assert request.object_id == "1"  # type: ignore[union-attr]
+    assert request.payload == {"status": "active"}  # type: ignore[union-attr]
+    assert json.loads(result.stdout)["status"] == "active"
+
+
+def test_update_command_with_yaml_file(cli_runner, monkeypatch, tmp_path: Path) -> None:
+    from netbox_cli import app as app_module
+
+    payload_path = tmp_path / "patch.yml"
+    payload_path.write_text("status: active\n", encoding="utf-8")
+
+    captured: dict[str, object] = {}
+    patch_runtime(monkeypatch, app_module)
+    monkeypatch.setattr(
+        app_module,
+        "update_record",
+        lambda client, request: captured.update({"request": request}) or RecordResult(
+            endpoint_path=request.endpoint_path,
+            row={"id": 1, "name": "leaf-01", "status": "active"},
+        ),
+    )
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "update",
+            "dcim/devices",
+            "id=1",
+            "--file",
+            str(payload_path),
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    request = captured["request"]
+    assert request.object_id == "1"  # type: ignore[union-attr]
+    assert request.payload == {"status": "active"}  # type: ignore[union-attr]
+    assert json.loads(result.stdout)["name"] == "leaf-01"
+
+
+def test_update_command_rejects_missing_id(cli_runner) -> None:
+    result = cli_runner.invoke(cli, ["update", "dcim/devices", "status=active"])
+
+    assert result.exit_code != 0
+    assert "Update requires exactly one id=<id> selector." in result.stderr
+
+
+def test_update_command_rejects_missing_payload(cli_runner) -> None:
+    result = cli_runner.invoke(cli, ["update", "dcim/devices", "id=1"])
+
+    assert result.exit_code != 0
+    assert "Choose exactly one payload input method" in result.stderr
+
+
+def test_update_command_rejects_multiple_ids(cli_runner) -> None:
+    result = cli_runner.invoke(
+        cli,
+        ["update", "dcim/devices", "id=1", "id=2", "status=active"],
+    )
+
+    assert result.exit_code != 0
+    assert "exactly one id=<id>" in result.stderr
+
+
+def test_update_command_rejects_inline_payload_with_file(cli_runner, tmp_path: Path) -> None:
+    payload_path = tmp_path / "patch.json"
+    payload_path.write_text('{"status": "active"}', encoding="utf-8")
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "update",
+            "dcim/devices",
+            "id=1",
+            "status=active",
+            "--file",
+            str(payload_path),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Choose exactly one payload input method" in result.stderr
+
+
+def test_create_command_dry_run_does_not_send_post(cli_runner, monkeypatch) -> None:
+    from netbox_cli import app as app_module
+
+    patch_runtime(monkeypatch, app_module)
+
+    def fail_if_called(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("create_record should not be called during dry-run")
+
+    monkeypatch.setattr(app_module, "create_record", fail_if_called)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "create",
+            "dcim/devices",
+            "name=leaf-01",
+            "--dry-run",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {
+        "endpoint": "dcim/devices",
+        "method": "POST",
+        "payload": {"name": "leaf-01"},
+    }
+
+
+def test_create_command_dry_run_table_preview_is_readable(cli_runner, monkeypatch) -> None:
+    from netbox_cli import app as app_module
+
+    patch_runtime(monkeypatch, app_module)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "create",
+            "dcim/devices",
+            "name=leaf-01",
+            "status=active",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Dry-run preview" in result.stdout
+    assert "method" in result.stdout
+    assert "endpoint" in result.stdout
+    assert "Payload" in result.stdout
+    assert '"name": "leaf-01"' in result.stdout
+    assert '"status": "active"' in result.stdout
+
+
+def test_update_command_dry_run_does_not_send_patch(cli_runner, monkeypatch) -> None:
+    from netbox_cli import app as app_module
+
+    patch_runtime(monkeypatch, app_module)
+
+    def fail_if_called(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("update_record should not be called during dry-run")
+
+    monkeypatch.setattr(app_module, "update_record", fail_if_called)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "update",
+            "dcim/devices",
+            "id=1",
+            "status=active",
+            "--dry-run",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {
+        "endpoint": "dcim/devices",
+        "method": "PATCH",
+        "payload": {"status": "active"},
+        "target_id": "1",
+    }
 
 
 def test_search_command_renders_json(cli_runner, monkeypatch) -> None:

@@ -15,6 +15,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .discovery import DiscoveredEndpoint, FilterDefinition
+from .mutations import MutationRequest
 from .profiles import get_default_columns
 from .query import QueryResult, RecordResult, get_record_field, stringify_value
 from .search import SearchGroup
@@ -290,6 +291,64 @@ def render_record_result(
     console.print(table)
 
 
+def render_mutation_preview(
+    request: MutationRequest,
+    output_format: OutputFormat,
+    *,
+    console: Console | None = None,
+) -> None:
+    """Render a dry-run preview for a create or update request."""
+
+    console = _resolve_console(console)
+    preview_payload: dict[str, Any] = {
+        "method": request.method,
+        "endpoint": request.endpoint_path,
+        "payload": request.payload,
+    }
+    if request.object_id is not None:
+        preview_payload["target_id"] = request.object_id
+
+    if output_format == "json":
+        _write_json(console, preview_payload)
+        return
+    if output_format == "csv":
+        detail_rows = [
+            {"property": "method", "value": request.method},
+            {"property": "endpoint", "value": request.endpoint_path},
+        ]
+        if request.object_id is not None:
+            detail_rows.append({"property": "target_id", "value": request.object_id})
+        detail_rows.append(
+            {
+                "property": "payload",
+                "value": json.dumps(
+                    request.payload,
+                    indent=2,
+                    sort_keys=True,
+                    ensure_ascii=False,
+                ),
+            }
+        )
+        _write_csv(console, detail_rows, ("property", "value"))
+        return
+
+    table = Table(title="Dry-run preview", box=box.SIMPLE_HEAVY)
+    table.add_column("PROPERTY")
+    table.add_column("VALUE", overflow="fold")
+    table.add_row("method", request.method)
+    table.add_row("endpoint", request.endpoint_path)
+    if request.object_id is not None:
+        table.add_row("target_id", request.object_id)
+    console.print(table)
+    console.print(
+        Panel(
+            _json_renderable(console, request.payload),
+            title="Payload",
+            border_style="cyan",
+        )
+    )
+
+
 def render_search_groups(
     groups: Sequence[SearchGroup],
     output_format: OutputFormat,
@@ -456,6 +515,17 @@ def _write_json(console: Console, payload: Any) -> None:
 
     console.file.write(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False))
     console.file.write("\n")
+
+
+def _json_renderable(console: Console, payload: Any) -> Any:
+    if _console_supports_styled_json(console):
+        return JSON.from_data(
+            payload,
+            indent=2,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    return json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False)
 
 
 def _write_csv(

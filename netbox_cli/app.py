@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -13,6 +14,13 @@ from .client import NetBoxClient
 from .config import init_config, load_settings, resolve_app_paths
 from .discovery import list_apps, list_endpoints, list_filters, resolve_list_path
 from .errors import ConfigError, NetBoxCLIError
+from .mutations import (
+    MutationInputError,
+    create_record,
+    prepare_create_request,
+    prepare_update_request,
+    update_record,
+)
 from .parsing import (
     ColumnParseError,
     FilterParseError,
@@ -31,6 +39,7 @@ from .render import (
     render_config_test,
     render_endpoints,
     render_filters,
+    render_mutation_preview,
     render_paths,
     render_query_result,
     render_record_result,
@@ -42,7 +51,7 @@ from .settings import AppPaths, LoadedSettings, NetBoxSettings, OutputFormat
 cli = typer.Typer(
     name="netbox",
     add_completion=False,
-    help="Read-only NetBox CLI for discovery, endpoint queries, grouped search, and an interactive shell.",
+    help="NetBox CLI for discovery, endpoint queries, grouped search, selective create/update, and an interactive shell.",
     no_args_is_help=True,
     rich_markup_mode="rich",
 )
@@ -337,6 +346,88 @@ def search_command(
         _exit_with_error(exc)
 
 
+@cli.command("create")
+def create_command(
+    endpoint_path: Annotated[
+        str,
+        typer.Argument(help="Endpoint path in app/endpoint form."),
+    ],
+    fields: Annotated[
+        list[str] | None,
+        typer.Argument(help="Inline payload fields in key=value form."),
+    ] = None,
+    payload_file: Annotated[
+        Path | None,
+        typer.Option("--file", help="Path to a JSON or YAML payload file."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Preview the POST request without sending it."),
+    ] = False,
+    output_format: Annotated[
+        CLIOutputFormat | None,
+        typer.Option("--format", "-f", help="Output format."),
+    ] = None,
+) -> None:
+    """Create one object with inline fields or a JSON/YAML payload file."""
+
+    try:
+        request = parse_create_args(endpoint_path, fields or [], payload_file)
+        _, loaded, client = _build_runtime()
+        resolved_output = _resolve_output_format(output_format, loaded.settings.default_format)
+        if dry_run:
+            render_mutation_preview(request, resolved_output)
+            return
+
+        render_record_result(
+            create_record(client, request),
+            resolved_output,
+        )
+    except NetBoxCLIError as exc:
+        _exit_with_error(exc)
+
+
+@cli.command("update")
+def update_command(
+    endpoint_path: Annotated[
+        str,
+        typer.Argument(help="Endpoint path in app/endpoint form."),
+    ],
+    fields: Annotated[
+        list[str] | None,
+        typer.Argument(help="id=<id> selector plus inline payload fields in key=value form."),
+    ] = None,
+    payload_file: Annotated[
+        Path | None,
+        typer.Option("--file", help="Path to a JSON or YAML payload file."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Preview the PATCH request without sending it."),
+    ] = False,
+    output_format: Annotated[
+        CLIOutputFormat | None,
+        typer.Option("--format", "-f", help="Output format."),
+    ] = None,
+) -> None:
+    """Update one object by id with inline fields or a JSON/YAML patch file."""
+
+    try:
+        request = parse_update_args(endpoint_path, fields or [], payload_file)
+        _, loaded, client = _build_runtime()
+        resolved_output = _resolve_output_format(output_format, loaded.settings.default_format)
+        if dry_run:
+            render_mutation_preview(request, resolved_output)
+            return
+
+        render_record_result(
+            update_record(client, request),
+            resolved_output,
+        )
+    except NetBoxCLIError as exc:
+        _exit_with_error(exc)
+
+
 @cli.command("shell")
 def shell_command() -> None:
     """Launch the interactive shell with contextual autocomplete."""
@@ -378,6 +469,28 @@ def parse_column_args(raw_columns: str | None) -> tuple[str, ...] | None:
         return parse_column_tokens(raw_columns)
     except ColumnParseError as exc:
         raise typer.BadParameter(str(exc), param_hint="--cols") from exc
+
+
+def parse_create_args(
+    endpoint_path: str,
+    fields: list[str],
+    payload_file: Path | None,
+):
+    try:
+        return prepare_create_request(endpoint_path, fields, payload_file)
+    except MutationInputError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def parse_update_args(
+    endpoint_path: str,
+    fields: list[str],
+    payload_file: Path | None,
+):
+    try:
+        return prepare_update_request(endpoint_path, fields, payload_file)
+    except MutationInputError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
 
 def _validate_context_list_usage(

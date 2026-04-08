@@ -5,7 +5,7 @@
 
 ## What It Is
 
-`netbox-cli` is a read-only Python CLI for NetBox.
+`netbox-cli` is a Python CLI for NetBox discovery, queries, and explicit create/update operations.
 
 Published on PyPI as `netbox-explorer`. Installed command: `netbox`.
 
@@ -28,7 +28,7 @@ The shell is a convenience layer on top of it.
 - explicit configuration with `netbox init`
 - config validation and connectivity checks with `netbox config test`
 - discovery of apps, endpoints, filters, and known choices from the NetBox API
-- read-only `list`, `get`, and grouped global `search`
+- `list`, `get`, grouped global `search`, plus minimal `create` and `update`
 - Rich tables for interactive terminal output
 - JSON and CSV output for automation and piping
 - interactive shell with history, contextual navigation, and autocomplete
@@ -62,10 +62,10 @@ python3 -m pip install "git+https://github.com/fciarfella/netbox-cli.git"
 
 ### Install a tagged release from GitHub
 
-Use a tagged release when you want a specific published GitHub version, such as `v0.2.0`.
+Use a tagged release when you want a specific published GitHub version, such as `v0.3.0`.
 
 ```bash
-python3 -m pip install "git+https://github.com/fciarfella/netbox-cli.git@v0.2.0"
+python3 -m pip install "git+https://github.com/fciarfella/netbox-cli.git@v0.3.0"
 ```
 
 ### Install from a local clone
@@ -179,6 +179,8 @@ netbox filters dcim/devices
 netbox list dcim/devices status=active
 netbox list dcim/devices q=router01 --cols name,site,status
 netbox get dcim/devices id=1490
+netbox create dcim/sites name=lab slug=lab --dry-run
+netbox update dcim/devices id=1490 status=active --dry-run
 netbox search router01 --cols id,name,site,status
 ```
 
@@ -241,6 +243,39 @@ Fetch exactly one object:
 ```bash
 netbox get dcim/devices id=1490
 ```
+
+Create one object:
+
+```bash
+netbox create dcim/sites name=lab slug=lab
+netbox create dcim/devices --file payload.json
+netbox create dcim/devices --file payload.yaml --dry-run
+```
+
+Update one object by id:
+
+```bash
+netbox update dcim/devices id=1490 status=active
+netbox update dcim/devices id=1490 --file patch.json
+netbox update dcim/devices id=1490 --file patch.yml --dry-run
+```
+
+`create` and `update` are currently available in the classic CLI only. REPL write commands are not part of this release.
+
+`create` and `update` accept exactly one payload input method:
+
+- inline `key=value` fields
+- or `--file`
+
+Supported payload file types:
+
+- `.json`
+- `.yaml`
+- `.yml`
+
+`--dry-run` previews the final method, endpoint, optional target id, and payload without sending the POST or PATCH request.
+
+Inline `key=value` payload values are sent as strings. Use JSON or YAML files when you need structured or typed payload data.
 
 Run global search across curated endpoints:
 
@@ -509,6 +544,7 @@ netbox_cli/
   client.py
   config.py
   discovery.py
+  mutations.py
   query.py
   search.py
   render.py
@@ -526,7 +562,9 @@ tests/
 
 ## Known Limitations
 
-- v1 is read-only
+- write support is intentionally minimal: `create`, `update`, and `--dry-run` only
+- there are no REPL write commands yet
+- delete is intentionally out of scope
 - the shell is line-oriented, not a full-screen TUI
 - autocomplete is best-effort when metadata is incomplete or unavailable
 - plugin endpoints are handled gracefully, but depend on what your NetBox instance exposes
