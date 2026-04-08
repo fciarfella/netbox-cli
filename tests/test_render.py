@@ -5,15 +5,19 @@ import re
 from io import StringIO
 
 from netbox_cli.discovery import ChoiceDefinition, FilterDefinition
+from netbox_cli.mutations import MutationRequest
 from netbox_cli.profiles import get_default_columns
 from netbox_cli.query import QueryResult, RecordResult
 from netbox_cli.render import (
     create_console,
     render_apps,
+    render_create_result,
     render_filters,
+    render_mutation_confirmation_preview,
     render_query_result,
     render_record_result,
     render_search_groups,
+    render_update_result,
 )
 from netbox_cli.search import SearchGroup
 
@@ -187,6 +191,94 @@ def test_render_record_result_table_smoke() -> None:
     output = buffer.getvalue()
     assert "PROPERTY" in output
     assert "leaf-01" in output
+
+
+def test_render_create_result_table_includes_created_summary() -> None:
+    console, buffer = make_console()
+    request = MutationRequest(
+        endpoint_path="dcim/sites",
+        method="POST",
+        payload={"name": "lab", "slug": "lab"},
+    )
+    result = RecordResult(
+        endpoint_path="dcim/sites",
+        row={"id": 22, "name": "lab", "slug": "lab"},
+    )
+
+    render_create_result(request, result, "table", console=console)
+
+    output = buffer.getvalue()
+    assert "Created dcim/sites #22" in output
+    assert "dcim/sites detail" in output
+
+
+def test_render_update_result_table_shows_summary_before_detail() -> None:
+    console, buffer = make_console()
+    request = MutationRequest(
+        endpoint_path="dcim/sites",
+        method="PATCH",
+        payload={"name": "new-name"},
+        object_id="22",
+    )
+    before_row = {"id": 22, "name": "old-name", "slug": "lab"}
+    result = RecordResult(
+        endpoint_path="dcim/sites",
+        row={"id": 22, "name": "new-name", "slug": "lab"},
+    )
+
+    render_update_result(request, before_row, result, "table", console=console)
+
+    output = buffer.getvalue()
+    assert "Updated dcim/sites #22" in output
+    assert "Updated fields" in output
+    assert "old-name" in output
+    assert "new-name" in output
+    assert output.index("Updated fields") < output.index("dcim/sites detail")
+
+
+def test_render_update_result_tty_styles_changed_values() -> None:
+    console, buffer = make_console(tty=True)
+    request = MutationRequest(
+        endpoint_path="dcim/sites",
+        method="PATCH",
+        payload={"name": "new-name"},
+        object_id="22",
+    )
+    before_row = {"id": 22, "name": "old-name"}
+    result = RecordResult(
+        endpoint_path="dcim/sites",
+        row={"id": 22, "name": "new-name"},
+    )
+
+    render_update_result(request, before_row, result, "table", console=console)
+
+    output = buffer.getvalue()
+    assert "\x1b[" in output
+    stripped = strip_ansi(output)
+    assert "Updated fields" in stripped
+    assert "old-name" in stripped
+    assert "new-name" in stripped
+
+
+def test_render_mutation_confirmation_preview_for_update_shows_planned_changes() -> None:
+    console, buffer = make_console()
+    request = MutationRequest(
+        endpoint_path="dcim/sites",
+        method="PATCH",
+        payload={"name": "new-name"},
+        object_id="22",
+    )
+
+    render_mutation_confirmation_preview(
+        request,
+        before_row={"id": 22, "name": "old-name"},
+        console=console,
+    )
+
+    output = buffer.getvalue()
+    assert "Planned changes" in output
+    assert "old-name" in output
+    assert "new-name" in output
 
 
 def test_render_search_groups_json_smoke() -> None:

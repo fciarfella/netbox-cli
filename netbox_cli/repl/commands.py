@@ -8,10 +8,24 @@ from typing import Any, Sequence
 
 from rich.console import Console
 from rich.panel import Panel
+from rich.prompt import Confirm
+from rich.text import Text
 
 from ..client import NetBoxClient
 from ..discovery import list_apps, list_endpoints, list_filters
 from ..errors import CommandUsageError, InvalidEndpointError
+from ..mutations import (
+    MutationInputError,
+    MutationRequest,
+    WRITE_CANCELLED_MESSAGE,
+    create_record,
+    fetch_update_before_row,
+    parse_mutation_command_tokens,
+    prepare_create_request,
+    prepare_update_request,
+    update_record,
+    validate_create_required_fields,
+)
 from ..parsing import (
     ColumnParseError,
     FilterParseError,
@@ -28,15 +42,20 @@ from ..query import (
 )
 from ..render import (
     render_apps,
+    render_create_result,
     render_endpoints,
     render_filters,
+    render_mutation_confirmation_preview,
+    render_mutation_preview,
     render_query_result,
     render_record_result,
     render_search_groups,
+    render_update_result,
+    mutation_confirmation_prompt,
 )
 from ..search import SearchGroup, global_search
 from ..settings import OutputFormat, RecordReference
-from .help import REPL_COMMANDS, REPL_HELP_TEXT
+from .help import REPL_COMMANDS, REPL_COMMAND_HELP, REPL_HELP_TEXT
 from .state import ShellState
 
 VALID_OUTPUT_FORMATS: tuple[OutputFormat, ...] = ("table", "json", "csv")
@@ -97,6 +116,8 @@ def execute_command(
         "filters": _handle_filters,
         "list": _handle_list,
         "get": _handle_get,
+        "create": _handle_create,
+        "update": _handle_update,
         "search": _handle_search,
         "open": _handle_open,
         "cols": _handle_cols,
@@ -121,9 +142,23 @@ def _handle_help(
     *,
     console: Console,
 ) -> CommandResult:
-    _require_no_args(command, "help")
     del state, client
-    console.print(Panel.fit(REPL_HELP_TEXT, title="Shell Help", border_style="blue"))
+    if not command.args:
+        _render_help_panel(console, REPL_HELP_TEXT, title="Shell Help")
+        return CommandResult()
+
+    if len(command.args) != 1:
+        raise CommandUsageError("Usage: help [create|update]")
+
+    topic = command.args[0].lower()
+    help_text = REPL_COMMAND_HELP.get(topic)
+    if help_text is None:
+        raise CommandUsageError(
+            "Unknown help topic "
+            f"{command.args[0]!r}. Available help topics: {', '.join(sorted(REPL_COMMAND_HELP))}."
+        )
+
+    _render_help_panel(console, help_text, title=f"{topic} help")
     return CommandResult()
 
 
@@ -229,6 +264,93 @@ def _handle_search(
         console=console,
     )
     state.remember_results(_record_references_for_groups(groups))
+    return CommandResult()
+
+
+def _handle_create(
+    state: ShellState,
+    command: ParsedCommand,
+    client: NetBoxClient,
+    *,
+    console: Console,
+) -> CommandResult:
+    if not command.args or _is_explicit_help_request(command.args):
+        _render_command_help(console, "create")
+        return CommandResult()
+
+    _require_endpoint_context(state, "create")
+    parsed = parse_mutation_args(command.args)
+    try:
+        request = prepare_create_request(
+            state.service_path,
+            parsed.fields,
+            parsed.payload_file,
+        )
+        validate_create_required_fields(client, request)
+    except MutationInputError as exc:
+        raise CommandUsageError(str(exc)) from exc
+
+    if parsed.dry_run:
+        render_mutation_preview(request, state.output_format, console=console)
+        return CommandResult()
+
+    render_mutation_confirmation_preview(request, console=console)
+    if not _confirm_mutation(console, request):
+        console.print(f"[bold yellow]{WRITE_CANCELLED_MESSAGE}[/]")
+        return CommandResult()
+
+    render_create_result(
+        request,
+        create_record(client, request),
+        state.output_format,
+        console=console,
+    )
+    return CommandResult()
+
+
+def _handle_update(
+    state: ShellState,
+    command: ParsedCommand,
+    client: NetBoxClient,
+    *,
+    console: Console,
+) -> CommandResult:
+    if not command.args or _is_explicit_help_request(command.args):
+        _render_command_help(console, "update")
+        return CommandResult()
+
+    _require_endpoint_context(state, "update")
+    parsed = parse_mutation_args(command.args)
+    try:
+        request = prepare_update_request(
+            state.service_path,
+            parsed.fields,
+            parsed.payload_file,
+        )
+    except MutationInputError as exc:
+        raise CommandUsageError(str(exc)) from exc
+
+    if parsed.dry_run:
+        render_mutation_preview(request, state.output_format, console=console)
+        return CommandResult()
+
+    before_row = fetch_update_before_row(client, request)
+    render_mutation_confirmation_preview(
+        request,
+        before_row=before_row,
+        console=console,
+    )
+    if not _confirm_mutation(console, request):
+        console.print(f"[bold yellow]{WRITE_CANCELLED_MESSAGE}[/]")
+        return CommandResult()
+
+    render_update_result(
+        request,
+        before_row,
+        update_record(client, request),
+        state.output_format,
+        console=console,
+    )
     return CommandResult()
 
 
@@ -379,6 +501,15 @@ def parse_get_filter_args(raw_filters: Sequence[str]) -> dict[str, str]:
         raise CommandUsageError(str(exc)) from exc
 
 
+def parse_mutation_args(raw_tokens: Sequence[str]):
+    """Parse shell write tokens with shared CLI-equivalent mutation semantics."""
+
+    try:
+        return parse_mutation_command_tokens(raw_tokens)
+    except MutationInputError as exc:
+        raise CommandUsageError(str(exc)) from exc
+
+
 def _parse_columns(raw_columns: Sequence[str]) -> tuple[str, ...]:
     try:
         return parse_column_parts(raw_columns)
@@ -422,6 +553,33 @@ def _require_endpoint_context(state: ShellState, command_name: str) -> None:
 def _require_no_args(command: ParsedCommand, command_name: str) -> None:
     if command.args:
         raise CommandUsageError(f"Usage: {command_name}")
+
+
+def _render_command_help(console: Console, command_name: str) -> None:
+    help_text = REPL_COMMAND_HELP.get(command_name)
+    if help_text is None:
+        raise CommandUsageError(f"No help is available for {command_name!r}.")
+    _render_help_panel(console, help_text, title=f"{command_name} help")
+
+
+def _render_help_panel(console: Console, text: str, *, title: str) -> None:
+    console.print(Panel.fit(Text(text), title=title, border_style="blue"))
+
+
+def _is_explicit_help_request(args: Sequence[str]) -> bool:
+    return len(args) == 1 and args[0] in {"--help", "-h"}
+
+
+def _confirm_mutation(console: Console, request: MutationRequest) -> bool:
+    return bool(
+        Confirm.ask(
+            mutation_confirmation_prompt(request),
+            console=console,
+            default=False,
+            show_choices=False,
+            show_default=False,
+        )
+    )
 
 
 def _print_context(console: Console, current_path: str) -> None:

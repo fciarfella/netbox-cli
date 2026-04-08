@@ -194,6 +194,8 @@ def test_context_help_at_empty_prompt_shows_commands() -> None:
 
     assert "help" in suggestions
     assert "list" in suggestions
+    assert "create" in suggestions
+    assert "update" in suggestions
     assert "ls" not in suggestions
     assert "pwd" not in suggestions
     assert "clear" not in suggestions

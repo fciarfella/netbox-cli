@@ -2,17 +2,46 @@ from __future__ import annotations
 
 import json
 from io import StringIO
+from pathlib import Path
 
 import pytest
 
 from netbox_cli.discovery import FilterDefinition
-from netbox_cli.errors import CommandUsageError
+from netbox_cli.errors import CommandUsageError, InvalidEndpointError
 from netbox_cli.query import QueryResult, RecordResult
 from netbox_cli.repl.commands import execute_command, parse_command
 from netbox_cli.render import create_console
 from netbox_cli.repl.state import ShellState
 from netbox_cli.search import SearchGroup
 from netbox_cli.settings import RecordReference
+
+
+class StubMutationClient:
+    def __init__(
+        self,
+        *,
+        options_payload: dict[str, object] | None = None,
+        detail_row: dict[str, object] | None = None,
+    ) -> None:
+        self.options_payload = (
+            {"actions": {"POST": {}}}
+            if options_payload is None
+            else options_payload
+        )
+        self.detail_row = {"id": 7} if detail_row is None else detail_row
+
+    def get_options(
+        self,
+        endpoint_path: str,
+        *,
+        use_cache: bool = True,
+    ) -> dict[str, object]:
+        del endpoint_path, use_cache
+        return self.options_payload
+
+    def get_json(self, path: str, *, params=None):  # type: ignore[no-untyped-def]
+        del path, params
+        return dict(self.detail_row)
 
 
 def make_console() -> tuple[object, StringIO]:
@@ -35,9 +64,55 @@ def test_help_output_is_plain_when_captured() -> None:
     execute_command(ShellState(), "help", object(), console=console)
 
     output = buffer.getvalue()
-    assert "Read-only NetBox shell" in output
+    assert "NetBox shell" in output
+    assert "create ..." in output
+    assert "update ..." in output
     assert "\x1b[" not in output
     assert "?[" not in output
+
+
+def test_help_create_shows_command_specific_help() -> None:
+    console, buffer = make_console()
+
+    execute_command(ShellState(), "help create", object(), console=console)
+
+    output = buffer.getvalue()
+    assert "Create one row in the current endpoint context." in output
+    assert "create key=value [key=value ...] [--dry-run]" in output
+    assert "create --file payload.yaml|json [--dry-run]" in output
+
+
+def test_create_help_flag_shows_command_specific_help() -> None:
+    console, buffer = make_console()
+
+    execute_command(ShellState(), "create --help", object(), console=console)
+
+    output = buffer.getvalue()
+    assert "Create one row in the current endpoint context." in output
+    assert "create key=value [key=value ...] [--dry-run]" in output
+    assert "create --file payload.yaml|json [--dry-run]" in output
+
+
+def test_update_help_flag_shows_command_specific_help() -> None:
+    console, buffer = make_console()
+
+    execute_command(ShellState(), "update --help", object(), console=console)
+
+    output = buffer.getvalue()
+    assert "Update one row in the current endpoint context." in output
+    assert "update id=<id> key=value [key=value ...] [--dry-run]" in output
+    assert "update id=<id> --file patch.yaml|json [--dry-run]" in output
+
+
+def test_help_update_shows_command_specific_help() -> None:
+    console, buffer = make_console()
+
+    execute_command(ShellState(), "help update", object(), console=console)
+
+    output = buffer.getvalue()
+    assert "Update one row in the current endpoint context." in output
+    assert "update id=<id> key=value [key=value ...] [--dry-run]" in output
+    assert "update id=<id> --file patch.yaml|json [--dry-run]" in output
 
 
 def test_pwd_is_no_longer_a_supported_command() -> None:
@@ -709,6 +784,348 @@ def test_get_command_rejects_repeated_lookup_filters() -> None:
         execute_command(state, "get site=dc1 site=lab", object(), console=console)
 
     assert "Repeated lookup filter" in str(exc_info.value)
+
+
+def test_create_command_requires_endpoint_context() -> None:
+    console, _ = make_console()
+    state = ShellState()
+
+    with pytest.raises(InvalidEndpointError) as exc_info:
+        execute_command(state, "create name=leaf-01", object(), console=console)
+
+    assert "requires an endpoint context" in str(exc_info.value)
+
+
+def test_create_command_with_no_args_shows_help() -> None:
+    console, buffer = make_console()
+
+    execute_command(ShellState(), "create", object(), console=console)
+
+    output = buffer.getvalue()
+    assert "Create one row in the current endpoint context." in output
+    assert "create key=value [key=value ...] [--dry-run]" in output
+    assert "Error:" not in output
+
+
+def test_create_command_dry_run_delegates_to_preview(monkeypatch) -> None:
+    from netbox_cli.repl import commands as commands_module
+
+    console, _ = make_console()
+    state = ShellState(current_path="/dcim/devices", output_format="json")
+    client = StubMutationClient()
+    captured: dict[str, object] = {}
+
+    def fail_if_called(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("create_record should not be called during dry-run")
+
+    monkeypatch.setattr(commands_module, "create_record", fail_if_called)
+    monkeypatch.setattr(
+        commands_module,
+        "render_mutation_preview",
+        lambda request, output_format, *, console: captured.update(
+            {"request": request, "output_format": output_format}
+        ),
+    )
+
+    execute_command(
+        state,
+        "create name=leaf-01 status=active --dry-run",
+        client,
+        console=console,
+    )
+
+    request = captured["request"]
+    assert request.method == "POST"  # type: ignore[union-attr]
+    assert request.endpoint_path == "dcim/devices"  # type: ignore[union-attr]
+    assert request.payload == {"name": "leaf-01", "status": "active"}  # type: ignore[union-attr]
+    assert captured["output_format"] == "json"
+
+
+def test_create_command_from_file_supports_dry_run(monkeypatch, tmp_path: Path) -> None:
+    from netbox_cli.repl import commands as commands_module
+
+    console, _ = make_console()
+    state = ShellState(current_path="/dcim/devices")
+    client = StubMutationClient()
+    payload_path = tmp_path / "payload.yaml"
+    payload_path.write_text("name: leaf-01\nstatus: active\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        commands_module,
+        "render_mutation_preview",
+        lambda request, output_format, *, console: captured.update({"request": request}),
+    )
+
+    execute_command(
+        state,
+        f"create --file {payload_path} --dry-run",
+        client,
+        console=console,
+    )
+
+    request = captured["request"]
+    assert request.method == "POST"  # type: ignore[union-attr]
+    assert request.payload == {"name": "leaf-01", "status": "active"}  # type: ignore[union-attr]
+
+
+def test_create_command_rejects_inline_id_field() -> None:
+    console, _ = make_console()
+    state = ShellState(current_path="/dcim/devices")
+
+    with pytest.raises(CommandUsageError) as exc_info:
+        execute_command(state, "create id=1 name=leaf-01", object(), console=console)
+
+    assert "Create does not accept id=<id>" in str(exc_info.value)
+
+
+def test_create_command_rejects_missing_required_fields_before_confirmation(
+    monkeypatch,
+) -> None:
+    from netbox_cli.repl import commands as commands_module
+
+    console, _ = make_console()
+    state = ShellState(current_path="/dcim/sites")
+    client = StubMutationClient(
+        options_payload={
+            "actions": {
+                "POST": {
+                    "name": {"required": True},
+                    "slug": {"required": True},
+                    "id": {"required": True, "read_only": True},
+                }
+            }
+        }
+    )
+
+    def fail_if_prompted(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("confirmation should not be shown when required fields are missing")
+
+    monkeypatch.setattr(commands_module.Confirm, "ask", fail_if_prompted)
+
+    with pytest.raises(CommandUsageError) as exc_info:
+        execute_command(state, "create name=mynewsite", client, console=console)
+
+    assert "Missing required fields for dcim/sites: slug" in str(exc_info.value)
+
+
+def test_create_command_confirms_before_live_write(monkeypatch) -> None:
+    from netbox_cli.repl import commands as commands_module
+
+    console, _ = make_console()
+    state = ShellState(current_path="/dcim/devices", output_format="json")
+    client = StubMutationClient()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(commands_module.Confirm, "ask", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        commands_module,
+        "create_record",
+        lambda client, request: captured.update({"request": request}) or RecordResult(
+            endpoint_path=request.endpoint_path,
+            row={"id": 1, "name": "leaf-01"},
+        ),
+    )
+    monkeypatch.setattr(
+        commands_module,
+        "render_create_result",
+        lambda request, result, output_format, *, console: captured.update(
+            {
+                "request_for_render": request,
+                "row": result.row,
+                "output_format": output_format,
+            }
+        ),
+    )
+
+    execute_command(state, "create name=leaf-01", client, console=console)
+
+    request = captured["request"]
+    assert request.method == "POST"  # type: ignore[union-attr]
+    assert request.payload == {"name": "leaf-01"}  # type: ignore[union-attr]
+    assert captured["row"] == {"id": 1, "name": "leaf-01"}
+    assert captured["output_format"] == "json"
+
+
+def test_create_command_confirmation_prompt_uses_friendly_wording(monkeypatch) -> None:
+    from netbox_cli.repl import commands as commands_module
+
+    console, buffer = make_console()
+    state = ShellState(current_path="/dcim/devices")
+    client = StubMutationClient()
+    captured_prompt: dict[str, str] = {}
+
+    def decline(prompt, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        captured_prompt["value"] = str(prompt)
+        return False
+
+    monkeypatch.setattr(commands_module.Confirm, "ask", decline)
+
+    execute_command(state, "create name=leaf-01 status=active", client, console=console)
+
+    output = buffer.getvalue()
+    assert captured_prompt["value"] == "Create new object in dcim/devices? [y/N]"
+    assert "New fields" in output
+    assert "name" in output
+    assert "status" in output
+    assert "Write cancelled." in output
+
+
+def test_create_command_cancellation_skips_live_write(monkeypatch) -> None:
+    from netbox_cli.repl import commands as commands_module
+
+    console, buffer = make_console()
+    state = ShellState(current_path="/dcim/devices")
+    client = StubMutationClient()
+
+    monkeypatch.setattr(commands_module.Confirm, "ask", lambda *args, **kwargs: False)
+
+    def fail_if_called(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("create_record should not be called when confirmation is declined")
+
+    monkeypatch.setattr(commands_module, "create_record", fail_if_called)
+
+    execute_command(state, "create name=leaf-01", client, console=console)
+
+    assert "Write cancelled." in buffer.getvalue()
+
+
+def test_update_command_dry_run_delegates_to_preview(monkeypatch) -> None:
+    from netbox_cli.repl import commands as commands_module
+
+    console, _ = make_console()
+    state = ShellState(current_path="/dcim/devices")
+    captured: dict[str, object] = {}
+
+    def fail_if_called(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("update_record should not be called during dry-run")
+
+    monkeypatch.setattr(commands_module, "update_record", fail_if_called)
+    monkeypatch.setattr(
+        commands_module,
+        "render_mutation_preview",
+        lambda request, output_format, *, console: captured.update({"request": request}),
+    )
+
+    execute_command(state, "update id=7 status=active --dry-run", object(), console=console)
+
+    request = captured["request"]
+    assert request.method == "PATCH"  # type: ignore[union-attr]
+    assert request.object_id == "7"  # type: ignore[union-attr]
+    assert request.payload == {"status": "active"}  # type: ignore[union-attr]
+
+
+def test_update_command_from_file_supports_dry_run(monkeypatch, tmp_path: Path) -> None:
+    from netbox_cli.repl import commands as commands_module
+
+    console, _ = make_console()
+    state = ShellState(current_path="/dcim/devices")
+    payload_path = tmp_path / "patch.json"
+    payload_path.write_text('{"status": "active"}', encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        commands_module,
+        "render_mutation_preview",
+        lambda request, output_format, *, console: captured.update({"request": request}),
+    )
+
+    execute_command(
+        state,
+        f"update id=7 --file {payload_path} --dry-run",
+        object(),
+        console=console,
+    )
+
+    request = captured["request"]
+    assert request.object_id == "7"  # type: ignore[union-attr]
+    assert request.payload == {"status": "active"}  # type: ignore[union-attr]
+
+
+def test_update_command_rejects_missing_id() -> None:
+    console, _ = make_console()
+    state = ShellState(current_path="/dcim/devices")
+
+    with pytest.raises(CommandUsageError) as exc_info:
+        execute_command(state, "update status=active", object(), console=console)
+
+    assert "exactly one id=<id> selector" in str(exc_info.value)
+
+
+def test_update_command_with_no_args_shows_help() -> None:
+    console, buffer = make_console()
+
+    execute_command(ShellState(), "update", object(), console=console)
+
+    output = buffer.getvalue()
+    assert "Update one row in the current endpoint context." in output
+    assert "update id=<id> key=value [key=value ...] [--dry-run]" in output
+    assert "Error:" not in output
+
+
+def test_update_command_confirms_before_live_write(monkeypatch) -> None:
+    from netbox_cli.repl import commands as commands_module
+
+    console, _ = make_console()
+    state = ShellState(current_path="/dcim/devices")
+    client = StubMutationClient(detail_row={"id": 7, "status": "planned"})
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(commands_module.Confirm, "ask", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        commands_module,
+        "update_record",
+        lambda client, request: captured.update({"request": request}) or RecordResult(
+            endpoint_path=request.endpoint_path,
+            row={"id": 7, "status": "active"},
+        ),
+    )
+    monkeypatch.setattr(
+        commands_module,
+        "render_update_result",
+        lambda request, before_row, result, output_format, *, console: captured.update(
+            {
+                "request_for_render": request,
+                "before_row": before_row,
+                "row": result.row,
+            }
+        ),
+    )
+
+    execute_command(state, "update id=7 status=active", client, console=console)
+
+    request = captured["request"]
+    assert request.method == "PATCH"  # type: ignore[union-attr]
+    assert request.object_id == "7"  # type: ignore[union-attr]
+    assert request.payload == {"status": "active"}  # type: ignore[union-attr]
+    assert captured["before_row"] == {"id": 7, "status": "planned"}
+    assert captured["row"] == {"id": 7, "status": "active"}
+
+
+def test_update_command_confirmation_prompt_uses_friendly_wording(monkeypatch) -> None:
+    from netbox_cli.repl import commands as commands_module
+
+    console, buffer = make_console()
+    state = ShellState(current_path="/dcim/sites")
+    client = StubMutationClient(detail_row={"id": 22, "name": "old-name"})
+    captured_prompt: dict[str, str] = {}
+
+    def decline(prompt, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        captured_prompt["value"] = str(prompt)
+        return False
+
+    monkeypatch.setattr(commands_module.Confirm, "ask", decline)
+
+    execute_command(state, "update id=22 name=new-name", client, console=console)
+
+    output = buffer.getvalue()
+    assert captured_prompt["value"] == "Update dcim/sites #22? [y/N]"
+    assert "Planned changes" in output
+    assert "old-name" in output
+    assert "new-name" in output
+    assert "Write cancelled." in output
 
 
 def test_search_command_stores_results_for_open(monkeypatch) -> None:

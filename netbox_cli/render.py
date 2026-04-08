@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
 import json
 import sys
 from pathlib import Path
@@ -13,6 +14,7 @@ from rich.console import Console
 from rich.json import JSON
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from .discovery import DiscoveredEndpoint, FilterDefinition
 from .mutations import MutationRequest
@@ -76,6 +78,14 @@ def print_warning(message: str) -> None:
 
 def print_success(message: str) -> None:
     get_stdout_console().print(f"[bold green]{message}[/]")
+
+
+@dataclass(frozen=True, slots=True)
+class MutationFieldSummary:
+    field: str
+    before: str
+    after: str
+    changed: bool
 
 
 def render_config_created(paths: AppPaths, settings: NetBoxSettings) -> None:
@@ -291,6 +301,75 @@ def render_record_result(
     console.print(table)
 
 
+def render_create_result(
+    request: MutationRequest,
+    result: RecordResult,
+    output_format: OutputFormat,
+    *,
+    console: Console | None = None,
+) -> None:
+    console = _resolve_console(console)
+    if output_format != "table":
+        render_record_result(result, output_format, console=console)
+        return
+
+    console.print(_mutation_status_text("Created", request.endpoint_path, result.row))
+    render_record_result(result, output_format, console=console)
+
+
+def render_update_result(
+    request: MutationRequest,
+    before_row: dict[str, Any] | None,
+    result: RecordResult,
+    output_format: OutputFormat,
+    *,
+    console: Console | None = None,
+) -> None:
+    console = _resolve_console(console)
+    if output_format != "table":
+        render_record_result(result, output_format, console=console)
+        return
+
+    console.print(_mutation_status_text("Updated", request.endpoint_path, result.row))
+    if before_row is not None:
+        changes = _field_summaries_for_result(
+            before_row,
+            result.row,
+            request.payload.keys(),
+        )
+        console.print(_build_change_table(changes, title="Updated fields"))
+    render_record_result(result, output_format, console=console)
+
+
+def render_mutation_confirmation_preview(
+    request: MutationRequest,
+    *,
+    before_row: dict[str, Any] | None = None,
+    console: Console | None = None,
+) -> None:
+    """Render a human-friendly confirmation preview before a live write."""
+
+    console = _resolve_console(console)
+    if request.method == "POST":
+        console.print(_build_payload_table(request.payload, title="New fields"))
+        return
+
+    if before_row is None:
+        return
+    changes = _field_summaries_for_payload(before_row, request.payload)
+    console.print(_build_change_table(changes, title="Planned changes"))
+
+
+def mutation_confirmation_prompt(request: MutationRequest) -> Text:
+    """Return a friendly confirmation prompt for a live mutation."""
+
+    if request.method == "POST":
+        return Text(f"Create new object in {request.endpoint_path}? [y/N]")
+
+    object_label = request.object_id or "?"
+    return Text(f"Update {request.endpoint_path} #{object_label}? [y/N]")
+
+
 def render_mutation_preview(
     request: MutationRequest,
     output_format: OutputFormat,
@@ -445,6 +524,36 @@ def _build_table(columns: Sequence[str], *, title: str) -> Table:
     return table
 
 
+def _build_payload_table(
+    payload: dict[str, Any],
+    *,
+    title: str,
+) -> Table:
+    table = Table(title=title, box=box.SIMPLE_HEAVY)
+    table.add_column("FIELD", style="cyan")
+    table.add_column("VALUE", overflow="fold")
+    for field_name, value in payload.items():
+        table.add_row(field_name, stringify_value(value) or "-")
+    return table
+
+
+def _build_change_table(
+    changes: Sequence[MutationFieldSummary],
+    *,
+    title: str,
+) -> Table:
+    table = Table(title=title, box=box.SIMPLE_HEAVY)
+    table.add_column("FIELD")
+    table.add_column("BEFORE", overflow="fold")
+    table.add_column("AFTER", overflow="fold")
+    for change in changes:
+        field_cell = Text(change.field, style="cyan")
+        after_style = "green" if change.changed else ""
+        after_cell = Text(change.after, style=after_style)
+        table.add_row(field_cell, change.before, after_cell)
+    return table
+
+
 def _row_cells(row: dict[str, Any], columns: Sequence[str]) -> list[str]:
     return [stringify_value(get_record_field(row, column)) or "-" for column in columns]
 
@@ -526,6 +635,65 @@ def _json_renderable(console: Console, payload: Any) -> Any:
             sort_keys=True,
         )
     return json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False)
+
+
+def _field_summaries_for_payload(
+    before_row: dict[str, Any],
+    payload: dict[str, Any],
+) -> list[MutationFieldSummary]:
+    return [
+        MutationFieldSummary(
+            field=field_name,
+            before=stringify_value(get_record_field(before_row, field_name)) or "-",
+            after=stringify_value(new_value) or "-",
+            changed=(
+                stringify_value(get_record_field(before_row, field_name)) or "-"
+            ) != (stringify_value(new_value) or "-"),
+        )
+        for field_name, new_value in payload.items()
+    ]
+
+
+def _field_summaries_for_result(
+    before_row: dict[str, Any],
+    after_row: dict[str, Any],
+    fields: Sequence[str],
+) -> list[MutationFieldSummary]:
+    summaries: list[MutationFieldSummary] = []
+    for field_name in fields:
+        before_value = stringify_value(get_record_field(before_row, field_name)) or "-"
+        after_value = stringify_value(get_record_field(after_row, field_name)) or "-"
+        summaries.append(
+            MutationFieldSummary(
+                field=field_name,
+                before=before_value,
+                after=after_value,
+                changed=before_value != after_value,
+            )
+        )
+    return summaries
+
+
+def _mutation_status_text(
+    verb: str,
+    endpoint_path: str,
+    row: dict[str, Any],
+) -> Text:
+    text = Text()
+    text.append(f"{verb} ", style="bold green")
+    text.append(endpoint_path, style="bold")
+    object_id = _extract_object_id(row)
+    if object_id is not None:
+        text.append(" ")
+        text.append(f"#{object_id}", style="bold green")
+    return text
+
+
+def _extract_object_id(row: dict[str, Any]) -> int | str | None:
+    object_id = row.get("id")
+    if isinstance(object_id, (int, str)):
+        return object_id
+    return None
 
 
 def _write_csv(

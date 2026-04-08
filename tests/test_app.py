@@ -6,10 +6,43 @@ from pathlib import Path
 from netbox_cli import __version__
 from netbox_cli.app import cli
 from netbox_cli.discovery import ResolvedListPath
+from netbox_cli.errors import APIError
 from netbox_cli.query import QueryResult, RecordResult
 from netbox_cli.settings import AppPaths
 from netbox_cli.search import SearchGroup
 from netbox_cli.settings import LoadedSettings, NetBoxSettings
+
+
+class StubRuntimeClient:
+    def __init__(
+        self,
+        *,
+        options_payload: dict[str, object] | None = None,
+        options_error: Exception | None = None,
+        detail_row: dict[str, object] | None = None,
+    ) -> None:
+        self.options_payload = (
+            {"actions": {"POST": {}}}
+            if options_payload is None
+            else options_payload
+        )
+        self.options_error = options_error
+        self.detail_row = {"id": 1} if detail_row is None else detail_row
+
+    def get_options(
+        self,
+        endpoint_path: str,
+        *,
+        use_cache: bool = True,
+    ) -> dict[str, object]:
+        del endpoint_path, use_cache
+        if self.options_error is not None:
+            raise self.options_error
+        return self.options_payload
+
+    def get_json(self, path: str, *, params=None):  # type: ignore[no-untyped-def]
+        del path, params
+        return dict(self.detail_row)
 
 
 def patch_list_resolution(monkeypatch, app_module, *, kind: str, path: str | None = None) -> None:  # type: ignore[no-untyped-def]
@@ -27,7 +60,7 @@ def patch_runtime(  # type: ignore[no-untyped-def]
     client=None,
     default_format: str = "table",
 ):
-    runtime_client = object() if client is None else client
+    runtime_client = StubRuntimeClient() if client is None else client
     monkeypatch.setattr(
         app_module,
         "_build_runtime",
@@ -91,6 +124,24 @@ def test_cache_subcommand_help_bootstraps(cli_runner) -> None:
 
     assert result.exit_code == 0
     assert "clear" in result.stdout
+
+
+def test_create_command_help_mentions_yes(cli_runner) -> None:
+    result = cli_runner.invoke(cli, ["create", "--help"])
+
+    assert result.exit_code == 0
+    assert "--yes" in result.stdout
+    assert "Execute the POST request." in result.stdout
+    assert "live writes." in result.stdout
+
+
+def test_update_command_help_mentions_yes(cli_runner) -> None:
+    result = cli_runner.invoke(cli, ["update", "--help"])
+
+    assert result.exit_code == 0
+    assert "--yes" in result.stdout
+    assert "Execute the PATCH request." in result.stdout
+    assert "live writes." in result.stdout
 
 
 def test_shell_command_launches_repl(cli_runner, monkeypatch, tmp_path: Path) -> None:
@@ -848,7 +899,15 @@ def test_create_command_with_inline_payload(cli_runner, monkeypatch) -> None:
 
     result = cli_runner.invoke(
         cli,
-        ["create", "dcim/devices", "name=leaf-01", "status=active", "--format", "json"],
+        [
+            "create",
+            "dcim/devices",
+            "name=leaf-01",
+            "status=active",
+            "--yes",
+            "--format",
+            "json",
+        ],
     )
 
     assert result.exit_code == 0
@@ -879,7 +938,7 @@ def test_create_command_with_json_file(cli_runner, monkeypatch, tmp_path: Path) 
 
     result = cli_runner.invoke(
         cli,
-        ["create", "dcim/devices", "--file", str(payload_path), "--format", "json"],
+        ["create", "dcim/devices", "--file", str(payload_path), "--yes", "--format", "json"],
     )
 
     assert result.exit_code == 0
@@ -907,7 +966,7 @@ def test_create_command_with_yaml_file(cli_runner, monkeypatch, tmp_path: Path) 
 
     result = cli_runner.invoke(
         cli,
-        ["create", "dcim/devices", "--file", str(payload_path), "--format", "json"],
+        ["create", "dcim/devices", "--file", str(payload_path), "--yes", "--format", "json"],
     )
 
     assert result.exit_code == 0
@@ -923,6 +982,26 @@ def test_create_command_rejects_missing_payload(cli_runner) -> None:
     assert "Choose exactly one payload input method" in result.stderr
 
 
+def test_create_command_requires_yes_for_live_write(cli_runner, monkeypatch) -> None:
+    from netbox_cli import app as app_module
+
+    patch_runtime(monkeypatch, app_module)
+
+    def fail_if_called(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("create_record should not be called without --yes")
+
+    monkeypatch.setattr(app_module, "create_record", fail_if_called)
+
+    result = cli_runner.invoke(
+        cli,
+        ["create", "dcim/devices", "name=leaf-01"],
+    )
+
+    assert result.exit_code != 0
+    assert "Live CLI writes require --yes." in result.stderr
+    assert "--dry-run" in result.stderr
+
+
 def test_create_command_rejects_inline_id_field(cli_runner) -> None:
     result = cli_runner.invoke(
         cli,
@@ -931,6 +1010,106 @@ def test_create_command_rejects_inline_id_field(cli_runner) -> None:
 
     assert result.exit_code != 0
     assert "Create does not accept id=<id> as an inline field." in result.stderr
+
+
+def test_create_command_rejects_missing_required_fields_before_live_write(
+    cli_runner,
+    monkeypatch,
+) -> None:
+    from netbox_cli import app as app_module
+
+    runtime_client = StubRuntimeClient(
+        options_payload={
+            "actions": {
+                "POST": {
+                    "name": {"required": True},
+                    "slug": {"required": True},
+                    "id": {"required": True, "read_only": True},
+                }
+            }
+        }
+    )
+    patch_runtime(monkeypatch, app_module, client=runtime_client)
+
+    def fail_if_called(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("create_record should not be called when required fields are missing")
+
+    monkeypatch.setattr(app_module, "create_record", fail_if_called)
+
+    result = cli_runner.invoke(
+        cli,
+        ["create", "dcim/sites", "name=mynewsite", "--yes"],
+    )
+
+    assert result.exit_code != 0
+    assert "Missing required fields for dcim/sites: slug" in result.stderr
+
+
+def test_create_command_with_all_required_fields_proceeds_normally(
+    cli_runner,
+    monkeypatch,
+) -> None:
+    from netbox_cli import app as app_module
+
+    runtime_client = StubRuntimeClient(
+        options_payload={
+            "actions": {
+                "POST": {
+                    "name": {"required": True},
+                    "slug": {"required": True},
+                }
+            }
+        }
+    )
+    captured: dict[str, object] = {}
+    patch_runtime(monkeypatch, app_module, client=runtime_client)
+    monkeypatch.setattr(
+        app_module,
+        "create_record",
+        lambda client, request: captured.update(
+            {"client": client, "request": request}
+        ) or RecordResult(
+            endpoint_path=request.endpoint_path,
+            row={"id": 1, "name": "lab", "slug": "lab"},
+        ),
+    )
+
+    result = cli_runner.invoke(
+        cli,
+        ["create", "dcim/sites", "name=lab", "slug=lab", "--yes", "--format", "json"],
+    )
+
+    assert result.exit_code == 0
+    assert captured["client"] is runtime_client
+    request = captured["request"]
+    assert request.payload == {"name": "lab", "slug": "lab"}  # type: ignore[union-attr]
+    assert json.loads(result.stdout)["slug"] == "lab"
+
+
+def test_create_command_table_output_includes_created_summary(
+    cli_runner,
+    monkeypatch,
+) -> None:
+    from netbox_cli import app as app_module
+
+    patch_runtime(monkeypatch, app_module)
+    monkeypatch.setattr(
+        app_module,
+        "create_record",
+        lambda client, request: RecordResult(
+            endpoint_path=request.endpoint_path,
+            row={"id": 22, "name": "lab", "slug": "lab"},
+        ),
+    )
+
+    result = cli_runner.invoke(
+        cli,
+        ["create", "dcim/sites", "name=lab", "slug=lab", "--yes"],
+    )
+
+    assert result.exit_code == 0
+    assert "Created dcim/sites #22" in result.stdout
+    assert "dcim/sites detail" in result.stdout
 
 
 def test_create_command_rejects_inline_payload_with_file(cli_runner, tmp_path: Path) -> None:
@@ -997,6 +1176,29 @@ def test_create_command_rejects_unsupported_file_extension(cli_runner, tmp_path:
     assert "Unsupported payload file extension" in result.stderr
 
 
+def test_create_command_preserves_server_validation_when_options_are_unavailable(
+    cli_runner,
+    monkeypatch,
+) -> None:
+    from netbox_cli import app as app_module
+
+    runtime_client = StubRuntimeClient(options_error=APIError("OPTIONS unavailable."))
+    patch_runtime(monkeypatch, app_module, client=runtime_client)
+
+    def raise_server_validation(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise APIError("slug: This field is required.")
+
+    monkeypatch.setattr(app_module, "create_record", raise_server_validation)
+
+    result = cli_runner.invoke(
+        cli,
+        ["create", "dcim/sites", "name=mynewsite", "--yes"],
+    )
+
+    assert result.exit_code != 0
+    assert "slug: This field is required." in result.stderr
+
+
 def test_update_command_with_id_and_inline_payload(cli_runner, monkeypatch) -> None:
     from netbox_cli import app as app_module
 
@@ -1021,6 +1223,7 @@ def test_update_command_with_id_and_inline_payload(cli_runner, monkeypatch) -> N
             "id=1",
             "name=leaf-01",
             "status=active",
+            "--yes",
             "--format",
             "json",
         ],
@@ -1060,6 +1263,7 @@ def test_update_command_with_json_file(cli_runner, monkeypatch, tmp_path: Path) 
             "id=1",
             "--file",
             str(payload_path),
+            "--yes",
             "--format",
             "json",
         ],
@@ -1097,6 +1301,7 @@ def test_update_command_with_yaml_file(cli_runner, monkeypatch, tmp_path: Path) 
             "id=1",
             "--file",
             str(payload_path),
+            "--yes",
             "--format",
             "json",
         ],
@@ -1114,6 +1319,26 @@ def test_update_command_rejects_missing_id(cli_runner) -> None:
 
     assert result.exit_code != 0
     assert "Update requires exactly one id=<id> selector." in result.stderr
+
+
+def test_update_command_requires_yes_for_live_write(cli_runner, monkeypatch) -> None:
+    from netbox_cli import app as app_module
+
+    patch_runtime(monkeypatch, app_module)
+
+    def fail_if_called(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("update_record should not be called without --yes")
+
+    monkeypatch.setattr(app_module, "update_record", fail_if_called)
+
+    result = cli_runner.invoke(
+        cli,
+        ["update", "dcim/devices", "id=1", "status=active"],
+    )
+
+    assert result.exit_code != 0
+    assert "Live CLI writes require --yes." in result.stderr
+    assert "--dry-run" in result.stderr
 
 
 def test_update_command_rejects_missing_payload(cli_runner) -> None:
@@ -1151,6 +1376,36 @@ def test_update_command_rejects_inline_payload_with_file(cli_runner, tmp_path: P
 
     assert result.exit_code != 0
     assert "Choose exactly one payload input method" in result.stderr
+
+
+def test_update_command_table_output_includes_changed_fields_summary(
+    cli_runner,
+    monkeypatch,
+) -> None:
+    from netbox_cli import app as app_module
+
+    runtime_client = StubRuntimeClient(detail_row={"id": 22, "name": "old-name", "slug": "lab"})
+    patch_runtime(monkeypatch, app_module, client=runtime_client)
+    monkeypatch.setattr(
+        app_module,
+        "update_record",
+        lambda client, request: RecordResult(
+            endpoint_path=request.endpoint_path,
+            row={"id": 22, "name": "new-name", "slug": "lab"},
+        ),
+    )
+
+    result = cli_runner.invoke(
+        cli,
+        ["update", "dcim/sites", "id=22", "name=new-name", "--yes"],
+    )
+
+    assert result.exit_code == 0
+    assert "Updated dcim/sites #22" in result.stdout
+    assert "Updated fields" in result.stdout
+    assert "old-name" in result.stdout
+    assert "new-name" in result.stdout
+    assert result.stdout.index("Updated fields") < result.stdout.index("dcim/sites detail")
 
 
 def test_create_command_dry_run_does_not_send_post(cli_runner, monkeypatch) -> None:

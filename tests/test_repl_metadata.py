@@ -14,7 +14,10 @@ from netbox_cli.settings import RecordReference
 class FakeClient:
     rows_by_path: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     error_by_path: dict[str, Exception] = field(default_factory=dict)
+    options_by_endpoint: dict[str, dict[str, Any]] = field(default_factory=dict)
+    options_error_by_endpoint: dict[str, Exception] = field(default_factory=dict)
     calls: list[tuple[str, dict[str, Any], int | None]] = field(default_factory=list)
+    options_calls: list[str] = field(default_factory=list)
 
     def paginate(
         self,
@@ -34,6 +37,19 @@ class FakeClient:
             rows=rows[:limit] if limit is not None else list(rows),
             total_count=len(rows),
         )
+
+    def get_options(
+        self,
+        endpoint_path: str,
+        *,
+        use_cache: bool = True,
+    ) -> dict[str, Any]:
+        del use_cache
+        normalized = endpoint_path.strip("/")
+        self.options_calls.append(normalized)
+        if normalized in self.options_error_by_endpoint:
+            raise self.options_error_by_endpoint[normalized]
+        return self.options_by_endpoint.get(normalized, {"actions": {}})
 
 
 def test_completion_metadata_provider_caches_apps_endpoints_and_filters(monkeypatch) -> None:
@@ -314,3 +330,57 @@ def test_recent_result_values_are_used_as_fallback(monkeypatch) -> None:
     )
 
     assert tuple(suggestion.value for suggestion in suggestions) == ("Tenant A",)
+
+
+def test_write_field_metadata_is_discovered_from_options_and_cached() -> None:
+    client = FakeClient(
+        options_by_endpoint={
+            "dcim/devices": {
+                "actions": {
+                    "POST": {
+                        "name": {"required": True},
+                        "status": {
+                            "required": False,
+                            "choices": [
+                                {"value": "active", "label": "Active"},
+                                {"value": "planned", "label": "Planned"},
+                            ],
+                        },
+                        "id": {"read_only": True},
+                    }
+                }
+            }
+        }
+    )
+    provider = CompletionMetadataProvider(client)
+
+    first = provider.get_write_field_names("dcim/devices", "POST")
+    second = provider.get_write_field_names("dcim/devices", "POST")
+    choices = provider.get_write_value_suggestions(
+        "dcim/devices",
+        "POST",
+        "status",
+        "",
+    )
+
+    assert first == ("name", "status")
+    assert second == first
+    assert tuple(suggestion.value for suggestion in choices) == ("active", "planned")
+    assert client.options_calls == ["dcim/devices"]
+
+
+def test_write_field_metadata_handles_options_lookup_failure() -> None:
+    client = FakeClient(
+        options_error_by_endpoint={
+            "dcim/devices": NetBoxConnectionError("boom"),
+        }
+    )
+    provider = CompletionMetadataProvider(client)
+
+    assert provider.get_write_field_names("dcim/devices", "POST") == ()
+    assert provider.get_write_value_suggestions(
+        "dcim/devices",
+        "POST",
+        "status",
+        "",
+    ) == ()

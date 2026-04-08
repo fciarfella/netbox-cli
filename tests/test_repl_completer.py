@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from netbox_cli.discovery import ChoiceDefinition, FilterDefinition
 from netbox_cli.repl.completer import NetBoxShellCompleter
-from netbox_cli.repl.metadata import FilterValueSuggestion
+from netbox_cli.repl.metadata import (
+    FilterValueSuggestion,
+    WriteFieldDefinition,
+)
 from netbox_cli.repl.state import ShellState
 from netbox_cli.settings import RecordReference
 
@@ -62,6 +66,40 @@ class StaticMetadataProvider:
             ),
         }
     )
+    write_fields: dict[tuple[str, str], tuple[WriteFieldDefinition, ...]] = field(
+        default_factory=lambda: {
+            (
+                "dcim/devices",
+                "POST",
+            ): (
+                WriteFieldDefinition(name="name"),
+                WriteFieldDefinition(
+                    name="status",
+                    choices=(
+                        FilterValueSuggestion(value="active", label="Active"),
+                        FilterValueSuggestion(value="offline", label="Offline"),
+                        FilterValueSuggestion(value="planned", label="Planned"),
+                    ),
+                ),
+                WriteFieldDefinition(name="site"),
+            ),
+            (
+                "dcim/devices",
+                "PATCH",
+            ): (
+                WriteFieldDefinition(name="name"),
+                WriteFieldDefinition(
+                    name="status",
+                    choices=(
+                        FilterValueSuggestion(value="active", label="Active"),
+                        FilterValueSuggestion(value="offline", label="Offline"),
+                        FilterValueSuggestion(value="planned", label="Planned"),
+                    ),
+                ),
+                WriteFieldDefinition(name="site"),
+            ),
+        }
+    )
 
     def get_apps(self) -> tuple[str, ...]:
         return self.apps
@@ -94,6 +132,45 @@ class StaticMetadataProvider:
             (endpoint_path.strip("/"), filter_name.strip()),
             (),
         )
+        normalized_prefix = prefix.casefold()
+        if not normalized_prefix:
+            return suggestions
+        return tuple(
+            suggestion
+            for suggestion in suggestions
+            if suggestion.value.casefold().startswith(normalized_prefix)
+            or (
+                suggestion.label is not None
+                and suggestion.label.casefold().startswith(normalized_prefix)
+            )
+        )
+
+    def get_write_field_names(self, endpoint_path: str, method: str) -> tuple[str, ...]:
+        return tuple(
+            field_def.name
+            for field_def in self.write_fields.get(
+                (endpoint_path.strip("/"), method.strip().upper()),
+                (),
+            )
+        )
+
+    def get_write_value_suggestions(
+        self,
+        endpoint_path: str,
+        method: str,
+        field_name: str,
+        prefix: str,
+    ) -> tuple[FilterValueSuggestion, ...]:
+        suggestions = ()
+        for field_def in self.write_fields.get(
+            (endpoint_path.strip("/"), method.strip().upper()),
+            (),
+        ):
+            if field_def.name != field_name.strip():
+                continue
+            suggestions = field_def.choices
+            break
+
         normalized_prefix = prefix.casefold()
         if not normalized_prefix:
             return suggestions
@@ -146,6 +223,8 @@ def test_command_completion_from_root_context() -> None:
     )
 
     assert "help" in completion_texts(completer, "he")
+    assert "create" in completion_texts(completer, "cr")
+    assert "update" in completion_texts(completer, "up")
     assert "ls" not in completion_texts(completer, "l")
     assert "pwd" not in completion_texts(completer, "p")
     assert "clear" not in completion_texts(completer, "c")
@@ -276,3 +355,104 @@ def test_plugin_path_completion_absolute_and_relative() -> None:
 
     assert completion_texts(root_completer, "cd /plugins/ne") == ["/plugins/netbox_dns"]
     assert completion_texts(plugin_completer, "cd re") == ["records"]
+
+
+def test_create_completion_suggests_writable_fields() -> None:
+    completer = NetBoxShellCompleter(
+        state=ShellState(current_path="/dcim/devices"),
+        metadata_provider=StaticMetadataProvider(),
+    )
+
+    texts = completion_texts(completer, "create ")
+
+    assert "name=" in texts
+    assert "status=" in texts
+    assert "--file" in texts
+    assert "--dry-run" in texts
+
+
+def test_update_completion_suggests_writable_fields_after_id() -> None:
+    completer = NetBoxShellCompleter(
+        state=ShellState(current_path="/dcim/devices"),
+        metadata_provider=StaticMetadataProvider(),
+    )
+
+    texts = completion_texts(completer, "update id=22 ")
+
+    assert "name=" in texts
+    assert "status=" in texts
+    assert "id=" not in texts
+
+
+def test_mutation_completion_does_not_resuggest_used_fields() -> None:
+    completer = NetBoxShellCompleter(
+        state=ShellState(current_path="/dcim/devices"),
+        metadata_provider=StaticMetadataProvider(),
+    )
+
+    texts = completion_texts(completer, "create name=leaf-01 ")
+
+    assert "name=" not in texts
+    assert "status=" in texts
+    assert "--file" not in texts
+
+
+def test_update_completion_does_not_resuggest_id_after_selector_is_present() -> None:
+    completer = NetBoxShellCompleter(
+        state=ShellState(current_path="/dcim/devices"),
+        metadata_provider=StaticMetadataProvider(),
+    )
+
+    texts = completion_texts(completer, "update id=22 na")
+
+    assert "name=" in texts
+    assert "id=" not in texts
+
+
+def test_mutation_choice_value_completion_uses_write_choices() -> None:
+    completer = NetBoxShellCompleter(
+        state=ShellState(current_path="/dcim/devices"),
+        metadata_provider=StaticMetadataProvider(),
+    )
+
+    assert completion_texts(completer, "create status=") == [
+        "active",
+        "offline",
+        "planned",
+    ]
+    assert completion_texts(completer, "update id=22 status=") == [
+        "active",
+        "offline",
+        "planned",
+    ]
+
+
+def test_mutation_option_completion_suggests_file_option() -> None:
+    completer = NetBoxShellCompleter(
+        state=ShellState(current_path="/dcim/devices"),
+        metadata_provider=StaticMetadataProvider(),
+    )
+
+    assert completion_texts(completer, "create --f") == ["--file"]
+
+
+def test_mutation_file_completion_suggests_supported_payload_files(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "payload.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "payload.yaml").write_text("name: leaf-01\n", encoding="utf-8")
+    (tmp_path / "payload.yml").write_text("name: leaf-02\n", encoding="utf-8")
+    (tmp_path / "notes.txt").write_text("ignore\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    completer = NetBoxShellCompleter(
+        state=ShellState(current_path="/dcim/devices"),
+        metadata_provider=StaticMetadataProvider(),
+    )
+
+    assert completion_texts(completer, "create --file ") == [
+        "payload.json",
+        "payload.yaml",
+        "payload.yml",
+    ]

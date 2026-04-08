@@ -25,6 +25,15 @@ class FilterValueSuggestion:
 
 
 @dataclass(frozen=True, slots=True)
+class WriteFieldDefinition:
+    """One writable field discovered from endpoint OPTIONS metadata."""
+
+    name: str
+    required: bool = False
+    choices: tuple[FilterValueSuggestion, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class RelatedValueLookupSpec:
     """How to resolve filter values from a related NetBox endpoint."""
 
@@ -129,6 +138,10 @@ class CompletionMetadataProvider:
     _apps: tuple[str, ...] | None = None
     _children_by_path: dict[str, tuple[str, ...]] = field(default_factory=dict)
     _filters_by_endpoint: dict[str, tuple[FilterDefinition, ...]] = field(default_factory=dict)
+    _write_fields_by_key: dict[
+        tuple[str, str],
+        tuple[WriteFieldDefinition, ...],
+    ] = field(default_factory=dict)
     _related_values_by_key: dict[
         tuple[str, str, str],
         tuple[FilterValueSuggestion, ...],
@@ -200,6 +213,70 @@ class CompletionMetadataProvider:
             if filter_def.name != normalized_name:
                 continue
             return tuple(choice.value for choice in filter_def.choices)
+        return ()
+
+    def get_write_fields(
+        self,
+        endpoint_path: str,
+        method: str,
+    ) -> tuple[WriteFieldDefinition, ...]:
+        """Return cached writable field metadata for one endpoint and method."""
+
+        normalized_endpoint = endpoint_path.strip("/")
+        normalized_method = method.strip().upper()
+        if not normalized_endpoint or normalized_method not in {"POST", "PATCH"}:
+            return ()
+
+        cache_key = (normalized_endpoint, normalized_method)
+        cached = self._write_fields_by_key.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            options = self.client.get_options(normalized_endpoint)
+        except NetBoxCLIError:
+            cached = ()
+        else:
+            cached = _extract_write_fields(options, method=normalized_method)
+
+        self._write_fields_by_key[cache_key] = cached
+        return cached
+
+    def get_write_field_names(
+        self,
+        endpoint_path: str,
+        method: str,
+    ) -> tuple[str, ...]:
+        """Return writable field names for one endpoint and method."""
+
+        return tuple(
+            field_def.name
+            for field_def in self.get_write_fields(endpoint_path, method)
+        )
+
+    def get_write_value_suggestions(
+        self,
+        endpoint_path: str,
+        method: str,
+        field_name: str,
+        prefix: str,
+    ) -> tuple[FilterValueSuggestion, ...]:
+        """Return known static choice values for one writable field."""
+
+        normalized_name = field_name.strip()
+        normalized_prefix = prefix.strip()
+        for field_def in self.get_write_fields(endpoint_path, method):
+            if field_def.name != normalized_name:
+                continue
+            return tuple(
+                suggestion
+                for suggestion in field_def.choices
+                if _text_matches_prefix(suggestion.value, normalized_prefix)
+                or (
+                    suggestion.label is not None
+                    and _text_matches_prefix(suggestion.label, normalized_prefix)
+                )
+            )
         return ()
 
     def get_filter_value_suggestions(
@@ -461,6 +538,72 @@ def _dedupe_suggestions(
         seen.add(key)
         deduped.append(suggestion)
     return deduped
+
+
+def _extract_write_fields(
+    options_payload: dict[str, Any],
+    *,
+    method: str,
+) -> tuple[WriteFieldDefinition, ...]:
+    actions = options_payload.get("actions", {})
+    if not isinstance(actions, dict):
+        return ()
+
+    method_fields = actions.get(method)
+    if not isinstance(method_fields, dict):
+        return ()
+
+    write_fields: list[WriteFieldDefinition] = []
+    for raw_field_name in sorted(method_fields):
+        metadata = method_fields.get(raw_field_name)
+        if not isinstance(metadata, dict):
+            continue
+        if bool(metadata.get("read_only", False)):
+            continue
+
+        field_name = str(raw_field_name).strip()
+        if not field_name or field_name == "id":
+            continue
+
+        write_fields.append(
+            WriteFieldDefinition(
+                name=field_name,
+                required=bool(metadata.get("required", False)),
+                choices=_coerce_write_choice_suggestions(metadata.get("choices", [])),
+            )
+        )
+
+    return tuple(write_fields)
+
+
+def _coerce_write_choice_suggestions(raw_choices: Any) -> tuple[FilterValueSuggestion, ...]:
+    if not isinstance(raw_choices, list):
+        return ()
+
+    suggestions: list[FilterValueSuggestion] = []
+    for choice in raw_choices:
+        if isinstance(choice, dict):
+            value = stringify_value(
+                choice.get("value", choice.get("id", choice.get("name")))
+            ).strip()
+            label = stringify_value(
+                choice.get("label", choice.get("display_name", choice.get("name")))
+            ).strip()
+        else:
+            value = stringify_value(choice).strip()
+            label = value
+
+        if not value:
+            continue
+        suggestions.append(
+            FilterValueSuggestion(
+                value=value,
+                label=label if label and label != value else None,
+                source="static",
+            )
+        )
+
+    return tuple(_dedupe_suggestions(suggestions))
 
 
 def _text_matches_prefix(value: str, prefix: str) -> bool:

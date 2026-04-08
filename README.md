@@ -247,20 +247,24 @@ netbox get dcim/devices id=1490
 Create one object:
 
 ```bash
-netbox create dcim/sites name=lab slug=lab
-netbox create dcim/devices --file payload.json
+netbox create dcim/sites name=lab slug=lab --yes
+netbox create dcim/devices --file payload.json --yes
 netbox create dcim/devices --file payload.yaml --dry-run
 ```
 
 Update one object by id:
 
 ```bash
-netbox update dcim/devices id=1490 status=active
-netbox update dcim/devices id=1490 --file patch.json
+netbox update dcim/devices id=1490 status=active --yes
+netbox update dcim/devices id=1490 --file patch.json --yes
 netbox update dcim/devices id=1490 --file patch.yml --dry-run
 ```
 
-`create` and `update` are currently available in the classic CLI only. REPL write commands are not part of this release.
+`create` and `update` are available in both the classic CLI and the REPL. In the REPL, they only work in an endpoint context.
+
+In the classic CLI, real writes require `--yes`. Without `--yes`, the command fails locally instead of prompting. `--dry-run` never requires `--yes`.
+
+Table-mode write output adds a short created or updated summary before the full detail view. Successful updates also show an `Updated fields` summary.
 
 `create` and `update` accept exactly one payload input method:
 
@@ -276,6 +280,8 @@ Supported payload file types:
 `--dry-run` previews the final method, endpoint, optional target id, and payload without sending the POST or PATCH request.
 
 Inline `key=value` payload values are sent as strings. Use JSON or YAML files when you need structured or typed payload data.
+
+When NetBox exposes required POST fields in endpoint `OPTIONS` metadata, `create` checks for missing required fields locally before preview, confirmation, or POST.
 
 Run global search across curated endpoints:
 
@@ -426,6 +432,17 @@ netbox:/dcim/devices [table|15]> list site=dc1 site=lab
 netbox:/dcim/devices [table|15]> list web01 site=dc1 site=lab
 ```
 
+In an endpoint context, the shell also supports the same write syntax as the CLI:
+
+```text
+netbox:/dcim/devices [table|15]> create name=leaf-01 status=active --dry-run
+netbox:/dcim/devices [table|15]> create --file payload.yaml
+netbox:/dcim/devices [table|15]> update id=1490 status=offline --dry-run
+netbox:/dcim/devices [table|15]> update id=1490 --file patch.json
+```
+
+Real shell writes show a short human-readable summary before confirmation, then ask before sending POST or PATCH. `--dry-run` only previews the request and does not prompt.
+
 Shell commands:
 
 Navigation:
@@ -440,6 +457,8 @@ Inspection:
 filters
 list [term] [k=v ...]
 get k=v [...]
+create [k=v ...] [--file path] [--dry-run]
+update id=<id> [k=v ...] [--file path] [--dry-run]
 search <term>
 open <index>
 ```
@@ -467,6 +486,8 @@ It uses the current shell state plus cached metadata to suggest:
 - endpoint path segments
 - filter names for the current endpoint
 - known choice values for filters
+- writable field names and known choice values for `create` and `update`
+- `--file`, `--dry-run`, and local JSON/YAML payload files for write commands
 - known and default columns
 - simple enum values such as output formats
 
@@ -478,6 +499,9 @@ cd /plugins/ne<TAB>        -> /plugins/netbox_dns
 cd net<TAB>                -> netbox_dns
 list st<TAB>               -> status=
 list status=<TAB>          -> active offline planned
+create st<TAB>             -> status=
+create --file <TAB>        -> payload.json payload.yaml
+update id=22 status=<TAB>  -> active offline planned
 cols na<TAB>               -> name
 format j<TAB>              -> json
 ```
@@ -563,7 +587,7 @@ tests/
 ## Known Limitations
 
 - write support is intentionally minimal: `create`, `update`, and `--dry-run` only
-- there are no REPL write commands yet
+- REPL write support is intentionally small and endpoint-scoped
 - delete is intentionally out of scope
 - the shell is line-oriented, not a full-screen TUI
 - autocomplete is best-effort when metadata is incomplete or unavailable

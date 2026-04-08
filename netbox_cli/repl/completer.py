@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import shlex
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, Sequence
 
+from ..mutations import SUPPORTED_PAYLOAD_FILE_EXTENSIONS
 from ..profiles import get_default_columns
 from .help import REPL_COMMANDS
 from .metadata import CompletionMetadataProvider, FilterValueSuggestion
@@ -34,6 +36,7 @@ except ImportError:  # pragma: no cover - local fallback when prompt_toolkit is 
 OUTPUT_FORMAT_VALUES: tuple[str, ...] = ("table", "json", "csv")
 RESET_COLUMN_VALUES: tuple[str, ...] = ("reset", "default")
 _COMPLETION_SENTINEL = "__netbox_cli_complete__"
+WRITE_OPTION_VALUES: tuple[str, ...] = ("--file", "--dry-run")
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +45,17 @@ class CompletionInput:
 
     completed_tokens: tuple[str, ...]
     current_token: str
+
+
+@dataclass(frozen=True, slots=True)
+class MutationCompletionContext:
+    """Derived mutation completion state from tokens before the cursor."""
+
+    used_fields: frozenset[str]
+    has_file_payload: bool = False
+    has_dry_run: bool = False
+    has_valid_id: bool = False
+    expecting_file_path: bool = False
 
 
 class NetBoxShellCompleter(Completer):
@@ -74,6 +88,13 @@ class NetBoxShellCompleter(Completer):
             return
         if command_name in {"list", "get"}:
             yield from self._complete_filters(args_before_current, current_token)
+            return
+        if command_name in {"create", "update"}:
+            yield from self._complete_mutation(
+                command_name,
+                args_before_current,
+                current_token,
+            )
             return
         if command_name == "cols":
             yield from self._complete_columns(current_token)
@@ -138,6 +159,57 @@ class NetBoxShellCompleter(Completer):
             for filter_name in self.metadata_provider.get_filter_names(endpoint_path)
         ]
         yield from self._yield_matches(current_token, available_filters)
+
+    def _complete_mutation(
+        self,
+        command_name: str,
+        args_before_current: Sequence[str],
+        current_token: str,
+    ) -> Iterable[Completion]:
+        if self.metadata_provider is None or not self.state.is_endpoint_context:
+            return
+
+        completion_context = _analyze_mutation_completion_args(
+            command_name,
+            args_before_current,
+        )
+        method = "POST" if command_name == "create" else "PATCH"
+        endpoint_path = self.state.service_path
+
+        if current_token.startswith("--file="):
+            file_prefix = current_token.split("=", 1)[1]
+            yield from self._complete_payload_files(
+                file_prefix,
+                option_prefix="--file=",
+            )
+            return
+
+        if completion_context.expecting_file_path:
+            yield from self._complete_payload_files(current_token)
+            return
+
+        if "=" in current_token and not current_token.startswith("-"):
+            field_name, value_prefix = current_token.split("=", 1)
+            normalized_field = field_name.strip()
+            if command_name == "update" and normalized_field == "id":
+                return
+            suggestions = self.metadata_provider.get_write_value_suggestions(
+                endpoint_path,
+                method,
+                normalized_field,
+                value_prefix,
+            )
+            yield from self._yield_value_suggestions(value_prefix, suggestions)
+            return
+
+        candidates = _mutation_completion_candidates(
+            command_name,
+            endpoint_path=endpoint_path,
+            method=method,
+            metadata_provider=self.metadata_provider,
+            completion_context=completion_context,
+        )
+        yield from self._yield_matches(current_token, candidates)
 
     def _complete_columns(self, prefix: str) -> Iterable[Completion]:
         if not self.state.is_endpoint_context:
@@ -217,6 +289,39 @@ class NetBoxShellCompleter(Completer):
             if not _starts_with(value, normalized_prefix, normalized=True):
                 continue
             yield Completion(value, start_position=start_position)
+
+    def _complete_payload_files(
+        self,
+        prefix: str,
+        *,
+        option_prefix: str = "",
+    ) -> Iterable[Completion]:
+        search_dir, display_prefix, file_prefix = _resolve_file_completion_context(prefix)
+        if search_dir is None:
+            return
+
+        seen: set[str] = set()
+        try:
+            candidates = sorted(search_dir.iterdir(), key=lambda path: path.name.casefold())
+        except OSError:
+            return
+
+        for candidate in candidates:
+            if not candidate.is_file():
+                continue
+            if candidate.suffix.lower() not in SUPPORTED_PAYLOAD_FILE_EXTENSIONS:
+                continue
+            if not _starts_with(candidate.name, file_prefix):
+                continue
+
+            completion_text = f"{option_prefix}{display_prefix}{candidate.name}"
+            if completion_text in seen:
+                continue
+            seen.add(completion_text)
+            yield Completion(
+                completion_text,
+                start_position=-len(prefix) - len(option_prefix),
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,6 +433,122 @@ def _known_columns_for_state(state: ShellState) -> tuple[str, ...]:
                 ordered_columns.append(key)
 
     return tuple(ordered_columns)
+
+
+def _analyze_mutation_completion_args(
+    command_name: str,
+    args_before_current: Sequence[str],
+) -> MutationCompletionContext:
+    used_fields: set[str] = set()
+    has_file_payload = False
+    has_dry_run = False
+    has_valid_id = False
+    expecting_file_path = False
+
+    index = 0
+    while index < len(args_before_current):
+        token = args_before_current[index]
+        if token == "--dry-run":
+            has_dry_run = True
+            index += 1
+            continue
+        if token == "--file":
+            if index == len(args_before_current) - 1:
+                expecting_file_path = True
+                break
+            has_file_payload = True
+            index += 2
+            continue
+        if token.startswith("--file="):
+            if token.split("=", 1)[1].strip():
+                has_file_payload = True
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        if "=" not in token:
+            index += 1
+            continue
+
+        key, value = token.split("=", 1)
+        normalized_key = key.strip()
+        normalized_value = value.strip()
+        if not normalized_key:
+            index += 1
+            continue
+        if command_name == "update" and normalized_key == "id":
+            if normalized_value:
+                has_valid_id = True
+            index += 1
+            continue
+        used_fields.add(normalized_key)
+        index += 1
+
+    return MutationCompletionContext(
+        used_fields=frozenset(used_fields),
+        has_file_payload=has_file_payload,
+        has_dry_run=has_dry_run,
+        has_valid_id=has_valid_id,
+        expecting_file_path=expecting_file_path,
+    )
+
+
+def _mutation_completion_candidates(
+    command_name: str,
+    *,
+    endpoint_path: str,
+    method: str,
+    metadata_provider: CompletionMetadataProvider,
+    completion_context: MutationCompletionContext,
+) -> tuple[str, ...]:
+    candidates: list[str] = []
+
+    if command_name == "update" and not completion_context.has_valid_id:
+        candidates.append("id=")
+    elif not completion_context.has_file_payload:
+        candidates.extend(
+            f"{field_name}="
+            for field_name in metadata_provider.get_write_field_names(endpoint_path, method)
+            if field_name not in completion_context.used_fields
+        )
+
+    if not completion_context.has_file_payload and not completion_context.used_fields:
+        candidates.append("--file")
+
+    if not completion_context.has_dry_run:
+        candidates.append("--dry-run")
+
+    ordered_candidates: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        ordered_candidates.append(candidate)
+    return tuple(ordered_candidates)
+
+
+def _resolve_file_completion_context(
+    prefix: str,
+) -> tuple[Path | None, str, str]:
+    expanded_prefix = Path(prefix).expanduser() if prefix else Path(".")
+    if prefix.endswith("/"):
+        search_dir = expanded_prefix
+        display_prefix = prefix
+        file_prefix = ""
+    elif prefix:
+        search_dir = expanded_prefix.parent
+        file_prefix = expanded_prefix.name
+        display_prefix = prefix[: len(prefix) - len(file_prefix)]
+    else:
+        search_dir = Path(".")
+        display_prefix = ""
+        file_prefix = ""
+
+    if not search_dir.exists() or not search_dir.is_dir():
+        return None, display_prefix, file_prefix
+    return search_dir, display_prefix, file_prefix
 
 
 def _starts_with(value: str, prefix: str, *, normalized: bool = False) -> bool:

@@ -16,10 +16,15 @@ from .discovery import list_apps, list_endpoints, list_filters, resolve_list_pat
 from .errors import ConfigError, NetBoxCLIError
 from .mutations import (
     MutationInputError,
+    MutationRequest,
+    MutationSafetyError,
     create_record,
+    fetch_update_before_row,
     prepare_create_request,
     prepare_update_request,
+    require_cli_yes_for_live_write,
     update_record,
+    validate_create_required_fields,
 )
 from .parsing import (
     ColumnParseError,
@@ -39,11 +44,13 @@ from .render import (
     render_config_test,
     render_endpoints,
     render_filters,
+    render_create_result,
     render_mutation_preview,
     render_paths,
     render_query_result,
     render_record_result,
     render_search_groups,
+    render_update_result,
 )
 from .search import global_search
 from .settings import AppPaths, LoadedSettings, NetBoxSettings, OutputFormat
@@ -364,6 +371,10 @@ def create_command(
         bool,
         typer.Option("--dry-run", help="Preview the POST request without sending it."),
     ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Execute the POST request. Required for live writes."),
+    ] = False,
     output_format: Annotated[
         CLIOutputFormat | None,
         typer.Option("--format", "-f", help="Output format."),
@@ -373,13 +384,16 @@ def create_command(
 
     try:
         request = parse_create_args(endpoint_path, fields or [], payload_file)
+        validate_cli_write_safety(yes=yes, dry_run=dry_run)
         _, loaded, client = _build_runtime()
+        validate_create_request_fields(client, request)
         resolved_output = _resolve_output_format(output_format, loaded.settings.default_format)
         if dry_run:
             render_mutation_preview(request, resolved_output)
             return
 
-        render_record_result(
+        render_create_result(
+            request,
             create_record(client, request),
             resolved_output,
         )
@@ -405,6 +419,10 @@ def update_command(
         bool,
         typer.Option("--dry-run", help="Preview the PATCH request without sending it."),
     ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Execute the PATCH request. Required for live writes."),
+    ] = False,
     output_format: Annotated[
         CLIOutputFormat | None,
         typer.Option("--format", "-f", help="Output format."),
@@ -414,13 +432,21 @@ def update_command(
 
     try:
         request = parse_update_args(endpoint_path, fields or [], payload_file)
+        validate_cli_write_safety(yes=yes, dry_run=dry_run)
         _, loaded, client = _build_runtime()
         resolved_output = _resolve_output_format(output_format, loaded.settings.default_format)
         if dry_run:
             render_mutation_preview(request, resolved_output)
             return
 
-        render_record_result(
+        before_row = (
+            fetch_update_before_row(client, request)
+            if resolved_output == "table"
+            else None
+        )
+        render_update_result(
+            request,
+            before_row,
             update_record(client, request),
             resolved_output,
         )
@@ -489,6 +515,23 @@ def parse_update_args(
 ):
     try:
         return prepare_update_request(endpoint_path, fields, payload_file)
+    except MutationInputError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def validate_cli_write_safety(*, yes: bool, dry_run: bool) -> None:
+    try:
+        require_cli_yes_for_live_write(yes=yes, dry_run=dry_run)
+    except MutationSafetyError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--yes") from exc
+
+
+def validate_create_request_fields(
+    client: NetBoxClient,
+    request: MutationRequest,
+) -> None:
+    try:
+        validate_create_required_fields(client, request)
     except MutationInputError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
