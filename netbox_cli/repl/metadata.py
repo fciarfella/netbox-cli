@@ -30,6 +30,7 @@ class WriteFieldDefinition:
 
     name: str
     required: bool = False
+    value_type: str | None = None
     choices: tuple[FilterValueSuggestion, ...] = ()
 
 
@@ -261,14 +262,15 @@ class CompletionMetadataProvider:
         field_name: str,
         prefix: str,
     ) -> tuple[FilterValueSuggestion, ...]:
-        """Return known static choice values for one writable field."""
+        """Return known choice or related values for one writable field."""
 
         normalized_name = field_name.strip()
         normalized_prefix = prefix.strip()
+        suggestions: list[FilterValueSuggestion] = []
         for field_def in self.get_write_fields(endpoint_path, method):
             if field_def.name != normalized_name:
                 continue
-            return tuple(
+            suggestions.extend(
                 suggestion
                 for suggestion in field_def.choices
                 if _text_matches_prefix(suggestion.value, normalized_prefix)
@@ -277,7 +279,16 @@ class CompletionMetadataProvider:
                     and _text_matches_prefix(suggestion.label, normalized_prefix)
                 )
             )
-        return ()
+            break
+
+        suggestions.extend(
+            self._related_value_suggestions(
+                endpoint_path.strip("/"),
+                normalized_name,
+                normalized_prefix,
+            )
+        )
+        return tuple(_dedupe_suggestions(suggestions)[:MAX_VALUE_SUGGESTIONS])
 
     def get_filter_value_suggestions(
         self,
@@ -569,6 +580,7 @@ def _extract_write_fields(
             WriteFieldDefinition(
                 name=field_name,
                 required=bool(metadata.get("required", False)),
+                value_type=_coerce_write_field_type(metadata.get("type")),
                 choices=_coerce_write_choice_suggestions(metadata.get("choices", [])),
             )
         )
@@ -604,6 +616,15 @@ def _coerce_write_choice_suggestions(raw_choices: Any) -> tuple[FilterValueSugge
         )
 
     return tuple(_dedupe_suggestions(suggestions))
+
+
+def _coerce_write_field_type(raw_type: Any) -> str | None:
+    if not isinstance(raw_type, str):
+        return None
+    normalized = raw_type.strip()
+    if not normalized or normalized == "field":
+        return None
+    return normalized
 
 
 def _text_matches_prefix(value: str, prefix: str) -> bool:

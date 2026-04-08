@@ -7,10 +7,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
+from ..discovery import FilterDefinition
 from ..mutations import SUPPORTED_PAYLOAD_FILE_EXTENSIONS
 from ..profiles import get_default_columns
 from .help import REPL_COMMANDS
-from .metadata import CompletionMetadataProvider, FilterValueSuggestion
+from .metadata import (
+    CompletionMetadataProvider,
+    FilterValueSuggestion,
+    WriteFieldDefinition,
+)
 from .state import ROOT_PATH, ShellState
 
 try:
@@ -37,6 +42,56 @@ OUTPUT_FORMAT_VALUES: tuple[str, ...] = ("table", "json", "csv")
 RESET_COLUMN_VALUES: tuple[str, ...] = ("reset", "default")
 _COMPLETION_SENTINEL = "__netbox_cli_complete__"
 WRITE_OPTION_VALUES: tuple[str, ...] = ("--file", "--dry-run")
+COMMON_LIST_FILTER_PRIORITY: tuple[str, ...] = (
+    "q",
+    "id",
+    "name",
+    "slug",
+    "status",
+    "site",
+    "role",
+    "tenant",
+    "platform",
+    "rack",
+    "device_type",
+    "manufacturer",
+    "location",
+    "region",
+    "description",
+    "serial",
+)
+COMMON_GET_FILTER_PRIORITY: tuple[str, ...] = (
+    "id",
+    "name",
+    "slug",
+    "status",
+    "site",
+    "role",
+    "tenant",
+    "platform",
+    "rack",
+    "device_type",
+    "manufacturer",
+    "q",
+    "description",
+    "serial",
+)
+COMMON_WRITE_FIELD_PRIORITY: tuple[str, ...] = (
+    "name",
+    "slug",
+    "status",
+    "site",
+    "tenant",
+    "role",
+    "platform",
+    "rack",
+    "device_type",
+    "manufacturer",
+    "location",
+    "region",
+    "description",
+    "serial",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +111,13 @@ class MutationCompletionContext:
     has_dry_run: bool = False
     has_valid_id: bool = False
     expecting_file_path: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class FilterCompletionContext:
+    """Derived filter completion state from tokens before the cursor."""
+
+    used_fields: frozenset[str]
 
 
 class NetBoxShellCompleter(Completer):
@@ -87,7 +149,11 @@ class NetBoxShellCompleter(Completer):
             yield from self._complete_path(current_token)
             return
         if command_name in {"list", "get"}:
-            yield from self._complete_filters(args_before_current, current_token)
+            yield from self._complete_filters(
+                command_name,
+                args_before_current,
+                current_token,
+            )
             return
         if command_name in {"create", "update"}:
             yield from self._complete_mutation(
@@ -135,14 +201,18 @@ class NetBoxShellCompleter(Completer):
 
     def _complete_filters(
         self,
+        command_name: str,
         args_before_current: Sequence[str],
         current_token: str,
     ) -> Iterable[Completion]:
         if self.metadata_provider is None or not self.state.is_endpoint_context:
             return
-        del args_before_current
 
         endpoint_path = self.state.service_path
+        completion_context = _analyze_filter_completion_args(
+            command_name,
+            args_before_current,
+        )
         if "=" in current_token:
             filter_name, value_prefix = current_token.split("=", 1)
             suggestions = self.metadata_provider.get_filter_value_suggestions(
@@ -154,11 +224,14 @@ class NetBoxShellCompleter(Completer):
             yield from self._yield_value_suggestions(value_prefix, suggestions)
             return
 
-        available_filters = [
-            f"{filter_name}="
-            for filter_name in self.metadata_provider.get_filter_names(endpoint_path)
-        ]
-        yield from self._yield_matches(current_token, available_filters)
+        yield from self._yield_filter_matches(
+            current_token,
+            _prioritized_filters(
+                command_name,
+                self.metadata_provider.get_filters(endpoint_path),
+                used_fields=completion_context.used_fields,
+            ),
+        )
 
     def _complete_mutation(
         self,
@@ -191,6 +264,14 @@ class NetBoxShellCompleter(Completer):
         if "=" in current_token and not current_token.startswith("-"):
             field_name, value_prefix = current_token.split("=", 1)
             normalized_field = field_name.strip()
+            if (
+                command_name == "update"
+                and not completion_context.has_valid_id
+                and normalized_field != "id"
+            ):
+                return
+            if completion_context.has_file_payload and normalized_field != "id":
+                return
             if command_name == "update" and normalized_field == "id":
                 return
             suggestions = self.metadata_provider.get_write_value_suggestions(
@@ -202,14 +283,34 @@ class NetBoxShellCompleter(Completer):
             yield from self._yield_value_suggestions(value_prefix, suggestions)
             return
 
-        candidates = _mutation_completion_candidates(
-            command_name,
-            endpoint_path=endpoint_path,
-            method=method,
-            metadata_provider=self.metadata_provider,
-            completion_context=completion_context,
+        if current_token.startswith("-"):
+            yield from self._yield_matches(
+                current_token,
+                _mutation_option_candidates(completion_context),
+            )
+            return
+
+        if command_name == "update" and not completion_context.has_valid_id:
+            update_candidates = [
+                "id=",
+                *_mutation_option_candidates(completion_context),
+            ]
+            yield from self._yield_matches(current_token, tuple(update_candidates))
+            return
+
+        if not completion_context.has_file_payload:
+            yield from self._yield_mutation_field_matches(
+                current_token,
+                _prioritized_write_fields(
+                    self.metadata_provider.get_write_fields(endpoint_path, method),
+                    used_fields=completion_context.used_fields,
+                ),
+            )
+
+        yield from self._yield_matches(
+            current_token,
+            _mutation_option_candidates(completion_context),
         )
-        yield from self._yield_matches(current_token, candidates)
 
     def _complete_columns(self, prefix: str) -> Iterable[Completion]:
         if not self.state.is_endpoint_context:
@@ -289,6 +390,48 @@ class NetBoxShellCompleter(Completer):
             if not _starts_with(value, normalized_prefix, normalized=True):
                 continue
             yield Completion(value, start_position=start_position)
+
+    def _yield_mutation_field_matches(
+        self,
+        prefix: str,
+        field_definitions: Sequence[WriteFieldDefinition],
+    ) -> Iterable[Completion]:
+        normalized_prefix = prefix.casefold()
+        seen: set[str] = set()
+        for field_def in field_definitions:
+            completion_text = f"{field_def.name}="
+            key = completion_text.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            if normalized_prefix and not completion_text.casefold().startswith(normalized_prefix):
+                continue
+            yield Completion(
+                completion_text,
+                start_position=-len(prefix),
+                display_meta=_mutation_field_meta(field_def),
+            )
+
+    def _yield_filter_matches(
+        self,
+        prefix: str,
+        filter_definitions: Sequence[FilterDefinition],
+    ) -> Iterable[Completion]:
+        normalized_prefix = prefix.casefold()
+        seen: set[str] = set()
+        for filter_def in filter_definitions:
+            completion_text = f"{filter_def.name}="
+            key = completion_text.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            if normalized_prefix and not completion_text.casefold().startswith(normalized_prefix):
+                continue
+            yield Completion(
+                completion_text,
+                start_position=-len(prefix),
+                display_meta=_filter_field_meta(filter_def),
+            )
 
     def _complete_payload_files(
         self,
@@ -494,39 +637,131 @@ def _analyze_mutation_completion_args(
     )
 
 
-def _mutation_completion_candidates(
+def _analyze_filter_completion_args(
     command_name: str,
-    *,
-    endpoint_path: str,
-    method: str,
-    metadata_provider: CompletionMetadataProvider,
+    args_before_current: Sequence[str],
+) -> FilterCompletionContext:
+    used_fields: set[str] = set()
+    positional_terms_present = False
+
+    for token in args_before_current:
+        if "=" in token:
+            key, value = token.split("=", 1)
+            if not value.strip():
+                continue
+            normalized_key = key.strip()
+            if normalized_key:
+                used_fields.add(normalized_key)
+            continue
+
+        if command_name == "list" and token.strip():
+            positional_terms_present = True
+
+    if command_name == "list" and positional_terms_present and "q" not in used_fields:
+        used_fields.add("q")
+
+    return FilterCompletionContext(used_fields=frozenset(used_fields))
+
+
+def _mutation_option_candidates(
     completion_context: MutationCompletionContext,
 ) -> tuple[str, ...]:
     candidates: list[str] = []
-
-    if command_name == "update" and not completion_context.has_valid_id:
-        candidates.append("id=")
-    elif not completion_context.has_file_payload:
-        candidates.extend(
-            f"{field_name}="
-            for field_name in metadata_provider.get_write_field_names(endpoint_path, method)
-            if field_name not in completion_context.used_fields
-        )
-
     if not completion_context.has_file_payload and not completion_context.used_fields:
         candidates.append("--file")
-
     if not completion_context.has_dry_run:
         candidates.append("--dry-run")
+    return tuple(candidates)
 
-    ordered_candidates: list[str] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        ordered_candidates.append(candidate)
-    return tuple(ordered_candidates)
+
+def _prioritized_write_fields(
+    field_definitions: Sequence[WriteFieldDefinition],
+    *,
+    used_fields: frozenset[str],
+) -> tuple[WriteFieldDefinition, ...]:
+    common_priority_index = {
+        field_name: index
+        for index, field_name in enumerate(COMMON_WRITE_FIELD_PRIORITY)
+    }
+
+    remaining_fields = [
+        field_def
+        for field_def in field_definitions
+        if field_def.name not in used_fields
+    ]
+    remaining_fields.sort(
+        key=lambda field_def: (
+            0 if field_def.required else 1,
+            common_priority_index.get(field_def.name, len(common_priority_index)),
+            field_def.name,
+        )
+    )
+    return tuple(remaining_fields)
+
+
+def _prioritized_filters(
+    command_name: str,
+    filter_definitions: Sequence[FilterDefinition],
+    *,
+    used_fields: frozenset[str],
+) -> tuple[FilterDefinition, ...]:
+    priority_source = (
+        COMMON_LIST_FILTER_PRIORITY
+        if command_name == "list"
+        else COMMON_GET_FILTER_PRIORITY
+    )
+    common_priority_index = {
+        field_name: index
+        for index, field_name in enumerate(priority_source)
+    }
+
+    remaining_filters = [
+        filter_def
+        for filter_def in filter_definitions
+        if filter_def.name not in used_fields
+    ]
+    remaining_filters.sort(
+        key=lambda filter_def: (
+            common_priority_index.get(filter_def.name, len(common_priority_index)),
+            0 if filter_def.required else 1,
+            filter_def.name,
+        )
+    )
+    return tuple(remaining_filters)
+
+
+def _mutation_field_meta(field_def: WriteFieldDefinition) -> str | None:
+    return _field_meta_parts(
+        required=field_def.required,
+        value_type=field_def.value_type,
+        has_choices=bool(field_def.choices),
+    )
+
+
+def _filter_field_meta(filter_def: FilterDefinition) -> str | None:
+    return _field_meta_parts(
+        required=filter_def.required,
+        value_type=filter_def.value_type,
+        has_choices=bool(filter_def.choices),
+    )
+
+
+def _field_meta_parts(
+    *,
+    required: bool,
+    value_type: str | None,
+    has_choices: bool,
+) -> str | None:
+    parts: list[str] = []
+    if required:
+        parts.append("required")
+    if value_type:
+        parts.append(value_type)
+    if has_choices:
+        parts.append("choices")
+    if not parts:
+        return None
+    return " • ".join(parts)
 
 
 def _resolve_file_completion_context(

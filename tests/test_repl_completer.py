@@ -26,16 +26,25 @@ class StaticMetadataProvider:
     filters: dict[str, tuple[FilterDefinition, ...]] = field(
         default_factory=lambda: {
             "dcim/devices": (
+                FilterDefinition(name="serial", value_type="string"),
                 FilterDefinition(
                     name="status",
+                    value_type="select",
                     choices=(
                         ChoiceDefinition(value="active", label="Active"),
                         ChoiceDefinition(value="offline", label="Offline"),
                         ChoiceDefinition(value="planned", label="Planned"),
                     ),
                 ),
-                FilterDefinition(name="name"),
+                FilterDefinition(name="q", value_type="string"),
+                FilterDefinition(name="manufacturer"),
+                FilterDefinition(name="id", value_type="integer"),
+                FilterDefinition(name="name", required=True, value_type="string"),
+                FilterDefinition(name="slug", value_type="string"),
                 FilterDefinition(name="role"),
+                FilterDefinition(name="tenant"),
+                FilterDefinition(name="platform"),
+                FilterDefinition(name="device_type"),
                 FilterDefinition(name="site"),
                 FilterDefinition(name="rack"),
             )
@@ -64,6 +73,36 @@ class StaticMetadataProvider:
                 FilterValueSuggestion(value="rack-a1", label="DC1", source="related"),
                 FilterValueSuggestion(value="rack-a2", label="DC1", source="related"),
             ),
+            (
+                "dcim/devices",
+                "role",
+            ): (
+                FilterValueSuggestion(value="server", label="Server", source="related"),
+            ),
+            (
+                "dcim/devices",
+                "tenant",
+            ): (
+                FilterValueSuggestion(value="tenant-a", label="Tenant A", source="related"),
+            ),
+            (
+                "dcim/devices",
+                "platform",
+            ): (
+                FilterValueSuggestion(value="iosxe", label="IOS XE", source="related"),
+            ),
+            (
+                "dcim/devices",
+                "manufacturer",
+            ): (
+                FilterValueSuggestion(value="cisco", label="Cisco", source="related"),
+            ),
+            (
+                "dcim/devices",
+                "device_type",
+            ): (
+                FilterValueSuggestion(value="cat9300", label="Catalyst 9300", source="related"),
+            ),
         }
     )
     write_fields: dict[tuple[str, str], tuple[WriteFieldDefinition, ...]] = field(
@@ -72,9 +111,10 @@ class StaticMetadataProvider:
                 "dcim/devices",
                 "POST",
             ): (
-                WriteFieldDefinition(name="name"),
+                WriteFieldDefinition(name="serial", value_type="string"),
                 WriteFieldDefinition(
                     name="status",
+                    value_type="select",
                     choices=(
                         FilterValueSuggestion(value="active", label="Active"),
                         FilterValueSuggestion(value="offline", label="Offline"),
@@ -82,14 +122,16 @@ class StaticMetadataProvider:
                     ),
                 ),
                 WriteFieldDefinition(name="site"),
+                WriteFieldDefinition(name="name", required=True, value_type="string"),
             ),
             (
                 "dcim/devices",
                 "PATCH",
             ): (
-                WriteFieldDefinition(name="name"),
+                WriteFieldDefinition(name="serial", value_type="string"),
                 WriteFieldDefinition(
                     name="status",
+                    value_type="select",
                     choices=(
                         FilterValueSuggestion(value="active", label="Active"),
                         FilterValueSuggestion(value="offline", label="Offline"),
@@ -97,6 +139,7 @@ class StaticMetadataProvider:
                     ),
                 ),
                 WriteFieldDefinition(name="site"),
+                WriteFieldDefinition(name="name", required=True, value_type="string"),
             ),
         }
     )
@@ -148,10 +191,17 @@ class StaticMetadataProvider:
     def get_write_field_names(self, endpoint_path: str, method: str) -> tuple[str, ...]:
         return tuple(
             field_def.name
-            for field_def in self.write_fields.get(
-                (endpoint_path.strip("/"), method.strip().upper()),
-                (),
-            )
+            for field_def in self.get_write_fields(endpoint_path, method)
+        )
+
+    def get_write_fields(
+        self,
+        endpoint_path: str,
+        method: str,
+    ) -> tuple[WriteFieldDefinition, ...]:
+        return self.write_fields.get(
+            (endpoint_path.strip("/"), method.strip().upper()),
+            (),
         )
 
     def get_write_value_suggestions(
@@ -162,14 +212,16 @@ class StaticMetadataProvider:
         prefix: str,
     ) -> tuple[FilterValueSuggestion, ...]:
         suggestions = ()
-        for field_def in self.write_fields.get(
-            (endpoint_path.strip("/"), method.strip().upper()),
-            (),
-        ):
+        for field_def in self.get_write_fields(endpoint_path, method):
             if field_def.name != field_name.strip():
                 continue
             suggestions = field_def.choices
             break
+        if not suggestions:
+            suggestions = self.value_suggestions.get(
+                (endpoint_path.strip("/"), field_name.strip()),
+                (),
+            )
 
         normalized_prefix = prefix.casefold()
         if not normalized_prefix:
@@ -259,13 +311,50 @@ def test_endpoint_filter_name_completion() -> None:
     assert completion_texts(completer, "list st") == ["status="]
 
 
-def test_endpoint_filter_name_completion_allows_repeated_keys() -> None:
+def test_list_completion_suggests_useful_filters_first() -> None:
     completer = NetBoxShellCompleter(
         state=ShellState(current_path="/dcim/devices"),
         metadata_provider=StaticMetadataProvider(),
     )
 
-    assert completion_texts(completer, "list site=dc1 si") == ["site="]
+    texts = completion_texts(completer, "list ")
+
+    assert texts[:6] == ["q=", "id=", "name=", "slug=", "status=", "site="]
+
+
+def test_get_completion_suggests_useful_filters_first() -> None:
+    completer = NetBoxShellCompleter(
+        state=ShellState(current_path="/dcim/devices"),
+        metadata_provider=StaticMetadataProvider(),
+    )
+
+    texts = completion_texts(completer, "get ")
+
+    assert texts[:6] == ["id=", "name=", "slug=", "status=", "site=", "role="]
+
+
+def test_filter_completion_does_not_resuggest_used_filters() -> None:
+    completer = NetBoxShellCompleter(
+        state=ShellState(current_path="/dcim/devices"),
+        metadata_provider=StaticMetadataProvider(),
+    )
+
+    texts = completion_texts(completer, "list site=dc1 ")
+
+    assert "site=" not in texts
+    assert "status=" in texts
+
+
+def test_list_completion_treats_bare_terms_as_using_q() -> None:
+    completer = NetBoxShellCompleter(
+        state=ShellState(current_path="/dcim/devices"),
+        metadata_provider=StaticMetadataProvider(),
+    )
+
+    texts = completion_texts(completer, "list router01 ")
+
+    assert "q=" not in texts
+    assert "site=" in texts
 
 
 def test_endpoint_filter_choice_completion() -> None:
@@ -279,6 +368,11 @@ def test_endpoint_filter_choice_completion() -> None:
         "offline",
         "planned",
     ]
+    assert completion_texts(completer, "get status=") == [
+        "active",
+        "offline",
+        "planned",
+    ]
 
 
 def test_endpoint_related_filter_value_completion() -> None:
@@ -288,6 +382,8 @@ def test_endpoint_related_filter_value_completion() -> None:
     )
 
     assert completion_texts(completer, "list site=d") == ["dc1"]
+    assert completion_texts(completer, "get manufacturer=") == ["cisco"]
+    assert completion_texts(completer, "get device_type=") == ["cat9300"]
 
 
 def test_endpoint_related_filter_value_completion_uses_label_as_meta_only() -> None:
@@ -310,6 +406,7 @@ def test_endpoint_related_filter_value_completion_with_empty_prefix() -> None:
 
     assert completion_texts(completer, "list router01 site=") == ["dc1"]
     assert completion_texts(completer, "list router01 rack=") == ["rack-a1", "rack-a2"]
+    assert completion_texts(completer, "get role=") == ["server"]
 
 
 def test_columns_completion_uses_known_endpoint_columns() -> None:
@@ -357,6 +454,23 @@ def test_plugin_path_completion_absolute_and_relative() -> None:
     assert completion_texts(plugin_completer, "cd re") == ["records"]
 
 
+def test_filter_completion_includes_metadata_hints() -> None:
+    completer = NetBoxShellCompleter(
+        state=ShellState(current_path="/dcim/devices"),
+        metadata_provider=StaticMetadataProvider(),
+    )
+
+    completions = completion_objects(completer, "list ")
+    meta_by_text = {
+        completion.text: completion_meta_text(completion)
+        for completion in completions
+    }
+
+    assert meta_by_text["name="] == "required • string"
+    assert meta_by_text["status="] == "select • choices"
+    assert meta_by_text["id="] == "integer"
+
+
 def test_create_completion_suggests_writable_fields() -> None:
     completer = NetBoxShellCompleter(
         state=ShellState(current_path="/dcim/devices"),
@@ -365,8 +479,7 @@ def test_create_completion_suggests_writable_fields() -> None:
 
     texts = completion_texts(completer, "create ")
 
-    assert "name=" in texts
-    assert "status=" in texts
+    assert texts[:4] == ["name=", "status=", "site=", "serial="]
     assert "--file" in texts
     assert "--dry-run" in texts
 
@@ -379,8 +492,7 @@ def test_update_completion_suggests_writable_fields_after_id() -> None:
 
     texts = completion_texts(completer, "update id=22 ")
 
-    assert "name=" in texts
-    assert "status=" in texts
+    assert texts[:4] == ["name=", "status=", "site=", "serial="]
     assert "id=" not in texts
 
 
@@ -395,6 +507,15 @@ def test_mutation_completion_does_not_resuggest_used_fields() -> None:
     assert "name=" not in texts
     assert "status=" in texts
     assert "--file" not in texts
+
+
+def test_mutation_completion_uses_related_write_values() -> None:
+    completer = NetBoxShellCompleter(
+        state=ShellState(current_path="/dcim/devices"),
+        metadata_provider=StaticMetadataProvider(),
+    )
+
+    assert completion_texts(completer, "create site=") == ["dc1"]
 
 
 def test_update_completion_does_not_resuggest_id_after_selector_is_present() -> None:
@@ -456,3 +577,19 @@ def test_mutation_file_completion_suggests_supported_payload_files(
         "payload.yaml",
         "payload.yml",
     ]
+
+
+def test_mutation_field_completion_includes_metadata_hints() -> None:
+    completer = NetBoxShellCompleter(
+        state=ShellState(current_path="/dcim/devices"),
+        metadata_provider=StaticMetadataProvider(),
+    )
+
+    completions = completion_objects(completer, "create ")
+    meta_by_text = {
+        completion.text: completion_meta_text(completion)
+        for completion in completions
+    }
+
+    assert meta_by_text["name="] == "required • string"
+    assert meta_by_text["status="] == "select • choices"

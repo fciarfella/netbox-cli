@@ -116,6 +116,8 @@ def test_related_value_suggestions_cover_multiple_fields(monkeypatch) -> None:
             FilterDefinition(name="tenant"),
             FilterDefinition(name="role"),
             FilterDefinition(name="platform"),
+            FilterDefinition(name="device_type"),
+            FilterDefinition(name="manufacturer"),
         ]
 
     monkeypatch.setattr(metadata_module, "list_filters", fake_list_filters)
@@ -127,6 +129,8 @@ def test_related_value_suggestions_cover_multiple_fields(monkeypatch) -> None:
             "tenancy/tenants": [{"slug": "tenant-a", "name": "Tenant A"}],
             "dcim/device-roles": [{"slug": "server", "name": "Server"}],
             "dcim/platforms": [{"slug": "platform-a", "name": "Platform A"}],
+            "dcim/device-types": [{"slug": "cat9300", "model": "Catalyst 9300"}],
+            "dcim/manufacturers": [{"slug": "cisco", "name": "Cisco"}],
         }
     )
     provider = CompletionMetadataProvider(client)
@@ -174,6 +178,22 @@ def test_related_value_suggestions_cover_multiple_fields(monkeypatch) -> None:
             "pa",
         )
     ) == ("platform-a",)
+    assert tuple(
+        suggestion.value
+        for suggestion in provider.get_filter_value_suggestions(
+            "dcim/devices",
+            "device_type",
+            "cat",
+        )
+    ) == ("cat9300",)
+    assert tuple(
+        suggestion.value
+        for suggestion in provider.get_filter_value_suggestions(
+            "dcim/devices",
+            "manufacturer",
+            "ci",
+        )
+    ) == ("cisco",)
     assert tuple(
         suggestion.value
         for suggestion in provider.get_filter_value_suggestions(

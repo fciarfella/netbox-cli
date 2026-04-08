@@ -62,10 +62,10 @@ python3 -m pip install "git+https://github.com/fciarfella/netbox-cli.git"
 
 ### Install a tagged release from GitHub
 
-Use a tagged release when you want a specific published GitHub version, such as `v0.4.1`.
+Use a tagged release when you want a specific published GitHub version, such as `v0.5.0`.
 
 ```bash
-python3 -m pip install "git+https://github.com/fciarfella/netbox-cli.git@v0.4.1"
+python3 -m pip install "git+https://github.com/fciarfella/netbox-cli.git@v0.5.0"
 ```
 
 ### Install from a local clone
@@ -484,9 +484,10 @@ It uses the current shell state plus cached metadata to suggest:
 - shell commands
 - app names
 - endpoint path segments
-- filter names for the current endpoint
-- known choice values for filters
-- writable field names and known choice values for `create` and `update`
+- prioritized filter names for `list` and `get`, with common fields suggested first
+- known choice values and common related-object values for filters such as `site`, `tenant`, `role`, `platform`, `device_type`, and `manufacturer`
+- writable field names for `create` and `update`, with required/common fields suggested first
+- known choice values and common related-object values for writable fields such as `site`, `tenant`, `role`, and `platform`
 - `--file`, `--dry-run`, and local JSON/YAML payload files for write commands
 - known and default columns
 - simple enum values such as output formats
@@ -497,9 +498,14 @@ Examples:
 cd d<TAB>                  -> dcim
 cd /plugins/ne<TAB>        -> /plugins/netbox_dns
 cd net<TAB>                -> netbox_dns
+list <TAB>                 -> q= id= name= slug= status= site= ...
 list st<TAB>               -> status=
+list site=<TAB>            -> dc1 dc2 ...
 list status=<TAB>          -> active offline planned
+get <TAB>                  -> id= name= slug= status= site= role= ...
+get manufacturer=<TAB>     -> cisco juniper ...
 create st<TAB>             -> status=
+create site=<TAB>          -> dc1 dc2 ...
 create --file <TAB>        -> payload.json payload.yaml
 update id=22 status=<TAB>  -> active offline planned
 cols na<TAB>               -> name

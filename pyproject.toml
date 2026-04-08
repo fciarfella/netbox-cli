@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "netbox-explorer"
-version = "0.4.1"
+version = "0.5.0"
 description = "NetBox CLI with discovery, queries, explicit create/update commands, and an interactive shell."
 readme = "README.md"
 requires-python = ">=3.11"
