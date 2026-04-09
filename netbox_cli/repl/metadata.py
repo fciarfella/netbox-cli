@@ -148,6 +148,16 @@ class CompletionMetadataProvider:
         tuple[FilterValueSuggestion, ...],
     ] = field(default_factory=dict)
 
+    def replace_client(self, client: NetBoxClient) -> None:
+        """Swap the backing client and clear cached profile-specific metadata."""
+
+        self.client = client
+        self._apps = None
+        self._children_by_path.clear()
+        self._filters_by_endpoint.clear()
+        self._write_fields_by_key.clear()
+        self._related_values_by_key.clear()
+
     def get_apps(self) -> tuple[str, ...]:
         """Return cached top-level app names."""
 

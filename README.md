@@ -422,6 +422,16 @@ nb01:/> search router01
 nb01:/> open 2
 ```
 
+Profile management is also available inside the shell for listing profiles and switching the active one:
+
+```text
+nb01:/> profile list
+nb01:/> profile use nb02
+nb02:/>
+```
+
+If the shell was started with `netbox --profile <name> shell`, `profile use` is blocked for that pinned session. Profile creation stays in the classic CLI with `netbox profile add <name>`.
+
 Inside an endpoint context, `list` supports a shorthand search term:
 
 ```text
@@ -501,6 +511,8 @@ open <index>
 Session controls:
 
 ```text
+profile list
+profile use <name>
 cols
 cols a,b,c
 cols reset

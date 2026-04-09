@@ -182,10 +182,11 @@ def test_shell_command_launches_repl(cli_runner, monkeypatch, tmp_path: Path) ->
         ),
     )
 
-    def fake_launch_shell(client, *, history_path, initial_state) -> None:  # type: ignore[no-untyped-def]
+    def fake_launch_shell(client, *, history_path, initial_state, app_paths) -> None:  # type: ignore[no-untyped-def]
         launched["history_path"] = history_path
         launched["initial_state"] = initial_state
         launched["client"] = client
+        launched["app_paths"] = app_paths
 
     monkeypatch.setattr(app_module, "launch_shell", fake_launch_shell)
 
@@ -193,8 +194,57 @@ def test_shell_command_launches_repl(cli_runner, monkeypatch, tmp_path: Path) ->
 
     assert result.exit_code == 0
     assert launched["history_path"] == tmp_path / "state" / "shell-history"
+    assert launched["app_paths"] == AppPaths(
+        config_dir=tmp_path / "config",
+        config_path=tmp_path / "config" / "config.toml",
+        cache_dir=tmp_path / "cache",
+        history_dir=tmp_path / "state",
+        history_path=tmp_path / "state" / "shell-history",
+    )
     assert launched["initial_state"].current_path == "/"  # type: ignore[union-attr]
     assert launched["initial_state"].profile_name == "nb01"  # type: ignore[union-attr]
+    assert launched["initial_state"].profile_override_name is None  # type: ignore[union-attr]
+
+
+def test_shell_command_passes_profile_override_into_initial_state(cli_runner, monkeypatch, tmp_path: Path) -> None:
+    from netbox_cli import app as app_module
+
+    launched: dict[str, object] = {}
+    monkeypatch.setattr(
+        app_module,
+        "_build_runtime",
+        lambda profile_name=None: (
+            AppPaths(
+                config_dir=tmp_path / "config",
+                config_path=tmp_path / "config" / "config.toml",
+                cache_dir=tmp_path / "cache",
+                history_dir=tmp_path / "state",
+                history_path=tmp_path / "state" / "shell-history",
+            ),
+            LoadedSettings(
+                settings=NetBoxSettings(url="https://netbox.example.com", token="abc"),
+                source="file",
+                profile_name="nb02",
+                current_profile="nb01",
+                available_profiles=("nb01", "nb02"),
+            ),
+            object(),
+        ),
+    )
+
+    def fake_launch_shell(client, *, history_path, initial_state, app_paths) -> None:  # type: ignore[no-untyped-def]
+        launched["initial_state"] = initial_state
+        launched["app_paths"] = app_paths
+        launched["history_path"] = history_path
+        launched["client"] = client
+
+    monkeypatch.setattr(app_module, "launch_shell", fake_launch_shell)
+
+    result = cli_runner.invoke(cli, ["--profile", "nb02", "shell"])
+
+    assert result.exit_code == 0
+    assert launched["initial_state"].profile_name == "nb02"  # type: ignore[union-attr]
+    assert launched["initial_state"].profile_override_name == "nb02"  # type: ignore[union-attr]
 
 
 def test_cli_profile_override_is_passed_to_runtime(cli_runner, monkeypatch) -> None:

@@ -99,6 +99,22 @@ class MetadataCache:
         return self.cache_dir / f"options__{slug}__{digest}.json"
 
 
+def metadata_cache_for_profile(
+    cache_dir: Path,
+    profile_name: str | None,
+) -> MetadataCache:
+    """Return a metadata cache scoped to one profile when available."""
+
+    if profile_name is None:
+        return MetadataCache(cache_dir)
+
+    normalized_name = re.sub(r"[^A-Za-z0-9._-]+", "_", profile_name.strip()).strip("_")
+    if not normalized_name:
+        return MetadataCache(cache_dir)
+
+    return MetadataCache(cache_dir / "profiles" / normalized_name)
+
+
 def clear_metadata_cache(cache_dir: Path) -> int:
     """Remove cached metadata files and recreate the cache directory."""
 

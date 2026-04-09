@@ -9,7 +9,7 @@ from typing import Annotated
 import typer
 
 from . import __version__
-from .cache import MetadataCache, clear_metadata_cache
+from .cache import clear_metadata_cache, metadata_cache_for_profile
 from .client import NetBoxClient
 from .config import (
     init_config,
@@ -525,7 +525,9 @@ def shell_command(ctx: typer.Context) -> None:
             initial_state=ShellState.from_settings(
                 loaded.settings,
                 profile_name=loaded.profile_name,
+                profile_override_name=_requested_profile_name(ctx),
             ),
+            app_paths=paths,
         )
     except NetBoxCLIError as exc:
         _exit_with_error(exc)
@@ -627,7 +629,10 @@ def _build_runtime(
     loaded = load_settings(app_paths=paths, profile_name=profile_name)
     client = NetBoxClient(
         loaded.settings,
-        metadata_cache=MetadataCache(paths.cache_dir),
+        metadata_cache=metadata_cache_for_profile(
+            paths.cache_dir,
+            loaded.profile_name,
+        ),
     )
     return paths, loaded, client
 

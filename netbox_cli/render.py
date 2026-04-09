@@ -131,8 +131,12 @@ def render_paths(paths: AppPaths) -> None:
     console.print(Panel.fit(table, title="Runtime paths", border_style="blue"))
 
 
-def render_profiles(profiles: Sequence[ConfiguredProfile]) -> None:
-    console = get_stdout_console()
+def render_profiles(
+    profiles: Sequence[ConfiguredProfile],
+    *,
+    console: Console | None = None,
+) -> None:
+    console = _resolve_console(console)
     table = Table(title="Configured Profiles", box=box.SIMPLE_HEAVY)
     table.add_column("ACTIVE", justify="center")
     table.add_column("PROFILE")

@@ -17,6 +17,7 @@ class ShellState:
     """Mutable state for a shell session."""
 
     profile_name: str | None = None
+    profile_override_name: str | None = None
     current_path: str = ROOT_PATH
     output_format: OutputFormat = "table"
     limit: int = 15
@@ -29,15 +30,23 @@ class ShellState:
         settings: NetBoxSettings,
         *,
         profile_name: str | None = None,
+        profile_override_name: str | None = None,
     ) -> ShellState:
         """Build the initial shell state from persisted CLI settings."""
 
         return cls(
             profile_name=profile_name,
+            profile_override_name=profile_override_name,
             current_path=ROOT_PATH,
             output_format=settings.default_format,
             limit=settings.default_limit,
         )
+
+    @property
+    def is_profile_pinned(self) -> bool:
+        """Return whether the session profile was pinned at shell startup."""
+
+        return bool(self.profile_override_name)
 
     @property
     def service_path(self) -> str:

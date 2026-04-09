@@ -5,6 +5,7 @@ from __future__ import annotations
 REPL_COMMANDS: tuple[str, ...] = (
     "help",
     "cd",
+    "profile",
     "filters",
     "list",
     "get",
@@ -36,6 +37,8 @@ Inspect:
   open <index>      Open a numbered row from the last list or search
 
 Session:
+  profile list      Show configured profiles and mark the active one
+  profile use NAME  Persist and switch to a different profile in this shell
   cols              Show active columns for the current endpoint
   cols a,b,c        Override columns for the current endpoint
   cols reset        Restore default endpoint columns
@@ -44,8 +47,9 @@ Session:
   exit              Leave the shell
 
 Writes support --dry-run. Real REPL writes ask for confirmation before sending POST or PATCH.
+`profile add` stays in the classic CLI as `netbox profile add <name>`.
 
-Use TAB for contextual completion. Run `help`, `help create`, or `help update` any time to see this summary again.
+Use TAB for contextual completion. Run `help`, `help create`, `help update`, or `help profile` any time to see this summary again.
 """.strip()
 
 CREATE_HELP_TEXT = """
@@ -70,7 +74,20 @@ Choose exactly one payload input method: inline key=value fields or --file.
 Real writes ask for confirmation. `--dry-run` only previews the request.
 """.strip()
 
+PROFILE_HELP_TEXT = """
+Manage configured profiles inside the current shell session.
+
+Usage:
+  profile list
+  profile use <name>
+
+`profile use` switches the current shell session and updates the persisted active profile.
+If the shell was started with `netbox --profile <name> shell`, interactive profile switching is disabled for that session.
+Use `netbox profile add <name>` in the classic CLI to create or update profiles.
+""".strip()
+
 REPL_COMMAND_HELP: dict[str, str] = {
     "create": CREATE_HELP_TEXT,
+    "profile": PROFILE_HELP_TEXT,
     "update": UPDATE_HELP_TEXT,
 }

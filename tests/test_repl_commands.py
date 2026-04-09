@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from netbox_cli.config import init_config, load_settings
 from netbox_cli.discovery import FilterDefinition
 from netbox_cli.errors import CommandUsageError, InvalidEndpointError
 from netbox_cli.query import QueryResult, RecordResult
@@ -13,6 +14,8 @@ from netbox_cli.repl.commands import execute_command, parse_command
 from netbox_cli.render import create_console
 from netbox_cli.repl.state import ShellState
 from netbox_cli.search import SearchGroup
+from netbox_cli.repl.shell import build_left_prompt_text
+from netbox_cli.settings import AppPaths
 from netbox_cli.settings import RecordReference
 
 
@@ -82,6 +85,17 @@ def test_help_create_shows_command_specific_help() -> None:
     assert "create --file payload.yaml|json [--dry-run]" in output
 
 
+def test_help_profile_shows_command_specific_help() -> None:
+    console, buffer = make_console()
+
+    execute_command(ShellState(), "help profile", object(), console=console)
+
+    output = buffer.getvalue()
+    assert "Manage configured profiles inside the current shell session." in output
+    assert "profile list" in output
+    assert "profile use <name>" in output
+
+
 def test_create_help_flag_shows_command_specific_help() -> None:
     console, buffer = make_console()
 
@@ -102,6 +116,17 @@ def test_update_help_flag_shows_command_specific_help() -> None:
     assert "Update one row in the current endpoint context." in output
     assert "update id=<id> key=value [key=value ...] [--dry-run]" in output
     assert "update id=<id> --file patch.yaml|json [--dry-run]" in output
+
+
+def test_profile_help_flag_shows_command_specific_help() -> None:
+    console, buffer = make_console()
+
+    execute_command(ShellState(), "profile --help", object(), console=console)
+
+    output = buffer.getvalue()
+    assert "Manage configured profiles inside the current shell session." in output
+    assert "profile list" in output
+    assert "profile use <name>" in output
 
 
 def test_help_update_shows_command_specific_help() -> None:
@@ -162,6 +187,126 @@ def test_navigation_commands_update_state(monkeypatch) -> None:
 
     execute_command(state, "cd", object(), console=console)
     assert state.current_path == "/"
+
+
+def test_profile_list_renders_configured_profiles_in_repl(
+    temp_app_paths: AppPaths,
+) -> None:
+    console, buffer = make_console()
+
+    init_config(
+        url="https://nb01.example.com",
+        token="token-01",
+        profile_name="nb01",
+        app_paths=temp_app_paths,
+    )
+    init_config(
+        url="https://nb02.example.com",
+        token="token-02",
+        profile_name="nb02",
+        app_paths=temp_app_paths,
+    )
+
+    execute_command(
+        ShellState(profile_name="nb01"),
+        "profile list",
+        object(),
+        console=console,
+        app_paths=temp_app_paths,
+    )
+
+    output = buffer.getvalue()
+    assert "Configured Profiles" in output
+    assert "nb01" in output
+    assert "nb02" in output
+    assert "https://nb01.example.com" in output
+
+
+def test_profile_use_switches_session_and_persisted_active_profile(
+    temp_app_paths: AppPaths,
+) -> None:
+    console, _ = make_console()
+    state = ShellState(profile_name="nb01", current_path="/dcim/devices")
+    state.remember_results(
+        [
+            RecordReference(
+                endpoint_path="dcim/devices",
+                object_id=1,
+                display="leaf-01",
+                payload={"id": 1, "name": "leaf-01"},
+            )
+        ]
+    )
+
+    init_config(
+        url="https://nb01.example.com",
+        token="token-01",
+        profile_name="nb01",
+        app_paths=temp_app_paths,
+    )
+    init_config(
+        url="https://nb02.example.com",
+        token="token-02",
+        profile_name="nb02",
+        app_paths=temp_app_paths,
+    )
+
+    result = execute_command(
+        state,
+        "profile use nb02",
+        object(),
+        console=console,
+        app_paths=temp_app_paths,
+    )
+
+    loaded = load_settings(app_paths=temp_app_paths)
+    assert loaded.current_profile == "nb02"
+    assert state.profile_name == "nb02"
+    assert state.last_results == []
+    assert build_left_prompt_text(state) == "nb02:/dcim/devices> "
+    assert result.next_client is not None
+    assert result.next_client.settings.url == "https://nb02.example.com"
+    assert result.next_client.metadata_cache is not None
+    assert result.next_client.metadata_cache.cache_dir == (
+        temp_app_paths.cache_dir / "profiles" / "nb02"
+    )
+
+
+def test_profile_use_is_blocked_when_shell_session_is_pinned(
+    temp_app_paths: AppPaths,
+) -> None:
+    console, _ = make_console()
+    state = ShellState(
+        profile_name="nb02",
+        profile_override_name="nb02",
+        current_path="/dcim/devices",
+    )
+
+    init_config(
+        url="https://nb01.example.com",
+        token="token-01",
+        profile_name="nb01",
+        app_paths=temp_app_paths,
+    )
+    init_config(
+        url="https://nb02.example.com",
+        token="token-02",
+        profile_name="nb02",
+        app_paths=temp_app_paths,
+    )
+
+    with pytest.raises(CommandUsageError, match="pinned to profile 'nb02' via `--profile`"):
+        execute_command(
+            state,
+            "profile use nb01",
+            object(),
+            console=console,
+            app_paths=temp_app_paths,
+        )
+
+    loaded = load_settings(app_paths=temp_app_paths)
+    assert loaded.current_profile == "nb01"
+    assert state.profile_name == "nb02"
 
 
 def test_cd_with_no_args_goes_home(monkeypatch) -> None:

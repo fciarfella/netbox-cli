@@ -16,6 +16,7 @@ from .commands import execute_command
 from .completer import NetBoxShellCompleter
 from .metadata import CompletionMetadataProvider
 from .state import ShellState
+from ..settings import AppPaths
 
 try:
     from prompt_toolkit import PromptSession
@@ -64,6 +65,7 @@ def launch_shell(
     *,
     history_path: Path,
     initial_state: ShellState,
+    app_paths: AppPaths,
     console: Console | None = None,
 ) -> None:
     """Run the interactive shell session."""
@@ -75,7 +77,8 @@ def launch_shell(
 
     console = console if console is not None else get_stdout_console()
     history_path.parent.mkdir(parents=True, exist_ok=True)
-    metadata_provider = CompletionMetadataProvider(client)
+    active_client = client
+    metadata_provider = CompletionMetadataProvider(active_client)
     completer = NetBoxShellCompleter(
         state=initial_state,
         metadata_provider=metadata_provider,
@@ -113,12 +116,17 @@ def launch_shell(
                 result = execute_command(
                     initial_state,
                     line,
-                    client,
+                    active_client,
                     console=console,
+                    app_paths=app_paths,
                 )
             except NetBoxCLIError as exc:
                 console.print(f"[bold red]Error:[/] {exc}")
                 continue
+
+            if result.next_client is not None:
+                active_client = result.next_client
+                metadata_provider.replace_client(active_client)
 
             if result.should_exit:
                 break

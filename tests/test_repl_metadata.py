@@ -226,6 +226,33 @@ def test_related_value_suggestions_use_prefix_cache(monkeypatch) -> None:
     ]
 
 
+def test_completion_metadata_provider_replace_client_clears_cached_profile_state(monkeypatch) -> None:
+    from netbox_cli.repl import metadata as metadata_module
+
+    def fake_list_filters(client, endpoint_path):  # type: ignore[no-untyped-def]
+        del client, endpoint_path
+        return [FilterDefinition(name="site")]
+
+    monkeypatch.setattr(metadata_module, "list_filters", fake_list_filters)
+
+    first_client = FakeClient(
+        rows_by_path={"dcim/sites": [{"slug": "dc1", "name": "DC1"}]}
+    )
+    second_client = FakeClient(
+        rows_by_path={"dcim/sites": [{"slug": "lab", "name": "Lab"}]}
+    )
+    provider = CompletionMetadataProvider(first_client)
+
+    first = provider.get_filter_value_suggestions("dcim/devices", "site", "d")
+    provider.replace_client(second_client)
+    second = provider.get_filter_value_suggestions("dcim/devices", "site", "l")
+
+    assert tuple(suggestion.value for suggestion in first) == ("dc1",)
+    assert tuple(suggestion.value for suggestion in second) == ("lab",)
+    assert first_client.calls == [("dcim/sites", {"slug__ic": "d"}, 20)]
+    assert second_client.calls == [("dcim/sites", {"slug__ic": "l"}, 20)]
+
+
 def test_related_value_suggestions_return_initial_values_for_empty_prefix(monkeypatch) -> None:
     from netbox_cli.repl import metadata as metadata_module
 

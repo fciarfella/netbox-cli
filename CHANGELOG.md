@@ -2,13 +2,45 @@
 
 ## 0.6.0 - 2026-04-09
 
-- added first-class support for multiple named NetBox profiles
-- added persisted `current_profile`
-- added global `--profile <name>` override
-- added grouped profile commands under `netbox profile`
-- REPL prompt now shows the effective profile
-- removed the temporary top-level commands `init --profile`, `profiles`, and `use`
-- legacy single-profile config still works through a compatibility path
+### netbox-explorer 0.6.0
+
+This release adds the first multi-profile foundation for working with multiple NetBox instances and finalizes the profile-management UX across both the CLI and the REPL.
+
+### Added
+
+- Added first-class support for multiple named NetBox profiles.
+- Added persisted `current_profile` selection.
+- Added global `--profile <name>` override for per-command and REPL session use.
+- Added grouped profile-management commands:
+  - `netbox profile add <name>`
+  - `netbox profile list`
+  - `netbox profile use <name>`
+- Added REPL support for:
+  - `profile list`
+  - `profile use <name>`
+- REPL prompts now show the effective profile, for example `nb01:/dcim/devices>`.
+
+### Changed
+
+- Profile-management commands are now grouped under `netbox profile`.
+- The temporary top-level commands used during the initial multi-profile milestone have been removed:
+  - `netbox init --profile ...`
+  - `netbox profiles`
+  - `netbox use ...`
+- REPL profile switching now refreshes the active client, prompt, and profile-scoped metadata state without restarting the shell.
+
+### Compatibility
+
+- Existing legacy single-profile config continues to work through a compatibility path.
+- Profile resolution order is:
+  1. explicit `--profile`
+  2. persisted `current_profile`
+  3. legacy single-profile fallback
+
+### Notes
+
+- `profile add` remains CLI-only.
+- If the REPL is started with `--profile <name>`, interactive `profile use` is intentionally blocked for that session.
 
 ## 0.5.1 - 2026-04-09
 

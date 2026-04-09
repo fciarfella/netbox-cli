@@ -59,3 +59,18 @@ def test_shell_state_tracks_endpoint_column_overrides() -> None:
 
     state.set_columns(None)
     assert state.columns == ("id", "name", "site", "rack", "role", "status")
+
+
+def test_shell_state_can_mark_a_pinned_profile_override() -> None:
+    state = ShellState.from_settings(
+        NetBoxSettings(
+            url="https://netbox.example.com",
+            token="abc123",
+        ),
+        profile_name="nb02",
+        profile_override_name="nb02",
+    )
+
+    assert state.profile_name == "nb02"
+    assert state.profile_override_name == "nb02"
+    assert state.is_profile_pinned is True

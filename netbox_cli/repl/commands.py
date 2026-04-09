@@ -11,7 +11,9 @@ from rich.panel import Panel
 from rich.prompt import Confirm
 from rich.text import Text
 
+from ..cache import metadata_cache_for_profile
 from ..client import NetBoxClient
+from ..config import list_profiles, load_settings, use_profile
 from ..discovery import list_apps, list_endpoints, list_filters
 from ..errors import CommandUsageError, InvalidEndpointError
 from ..mutations import (
@@ -47,6 +49,7 @@ from ..render import (
     render_filters,
     render_mutation_confirmation_preview,
     render_mutation_preview,
+    render_profiles,
     render_query_result,
     render_record_result,
     render_search_groups,
@@ -54,7 +57,7 @@ from ..render import (
     mutation_confirmation_prompt,
 )
 from ..search import SearchGroup, global_search
-from ..settings import OutputFormat, RecordReference
+from ..settings import AppPaths, OutputFormat, RecordReference
 from .help import REPL_COMMANDS, REPL_COMMAND_HELP, REPL_HELP_TEXT
 from .state import ShellState
 
@@ -74,6 +77,7 @@ class CommandResult:
     """Outcome of executing one shell command."""
 
     should_exit: bool = False
+    next_client: NetBoxClient | None = None
 
 
 def parse_command(line: str) -> ParsedCommand | None:
@@ -103,6 +107,7 @@ def execute_command(
     client: NetBoxClient,
     *,
     console: Console,
+    app_paths: AppPaths | None = None,
 ) -> CommandResult:
     """Parse and execute a single shell command."""
 
@@ -113,6 +118,7 @@ def execute_command(
     handlers = {
         "help": _handle_help,
         "cd": _handle_cd,
+        "profile": _handle_profile,
         "filters": _handle_filters,
         "list": _handle_list,
         "get": _handle_get,
@@ -132,6 +138,9 @@ def execute_command(
             f"Unknown command {command.name!r}. Available commands: {available}."
         )
 
+    if command.name == "profile":
+        return handler(state, command, client, console=console, app_paths=app_paths)
+
     return handler(state, command, client, console=console)
 
 
@@ -148,7 +157,7 @@ def _handle_help(
         return CommandResult()
 
     if len(command.args) != 1:
-        raise CommandUsageError("Usage: help [create|update]")
+        raise CommandUsageError("Usage: help [create|update|profile]")
 
     topic = command.args[0].lower()
     help_text = REPL_COMMAND_HELP.get(topic)
@@ -174,6 +183,64 @@ def _handle_cd(
     state.set_path(next_path)
     _print_context(console, state.current_path)
     return CommandResult()
+
+
+def _handle_profile(
+    state: ShellState,
+    command: ParsedCommand,
+    client: NetBoxClient,
+    *,
+    console: Console,
+    app_paths: AppPaths | None,
+) -> CommandResult:
+    del client
+    if not command.args or _is_explicit_help_request(command.args):
+        _render_command_help(console, "profile")
+        return CommandResult()
+
+    paths = _require_shell_app_paths(app_paths)
+    subcommand = command.args[0].lower()
+
+    if subcommand == "list":
+        if len(command.args) != 1:
+            raise CommandUsageError("Usage: profile list")
+        render_profiles(list_profiles(app_paths=paths), console=console)
+        return CommandResult()
+
+    if subcommand == "use":
+        if len(command.args) != 2:
+            raise CommandUsageError("Usage: profile use <name>")
+        if state.is_profile_pinned:
+            pinned_name = state.profile_override_name or state.profile_name or "<unknown>"
+            raise CommandUsageError(
+                "This shell session is pinned to "
+                f"profile {pinned_name!r} via `--profile`. Start a new shell without `--profile` "
+                "to use `profile use`."
+            )
+
+        target_profile = command.args[1]
+        use_profile(target_profile, app_paths=paths)
+        loaded = load_settings(app_paths=paths)
+        next_client = NetBoxClient(
+            loaded.settings,
+            metadata_cache=metadata_cache_for_profile(
+                paths.cache_dir,
+                loaded.profile_name,
+            ),
+        )
+        state.profile_name = loaded.profile_name
+        state.clear_results()
+        console.print(f"[bold green]Active profile set to {loaded.profile_name!r}.[/]")
+        return CommandResult(next_client=next_client)
+
+    if subcommand == "add":
+        raise CommandUsageError(
+            "Use `netbox profile add <name>` in the classic CLI to create or update profiles."
+        )
+
+    raise CommandUsageError(
+        "Usage: profile list | profile use <name>"
+    )
 
 
 def _handle_filters(
@@ -553,6 +620,14 @@ def _require_endpoint_context(state: ShellState, command_name: str) -> None:
 def _require_no_args(command: ParsedCommand, command_name: str) -> None:
     if command.args:
         raise CommandUsageError(f"Usage: {command_name}")
+
+
+def _require_shell_app_paths(app_paths: AppPaths | None) -> AppPaths:
+    if app_paths is None:
+        raise CommandUsageError(
+            "Profile management is not available in this shell context."
+        )
+    return app_paths
 
 
 def _render_command_help(console: Console, command_name: str) -> None:

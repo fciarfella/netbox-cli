@@ -261,6 +261,7 @@ def test_context_help_at_empty_prompt_shows_commands() -> None:
     suggestions = get_context_help_suggestions(make_completer(ShellState()), "")
 
     assert "help" in suggestions
+    assert "profile" in suggestions
     assert "list" in suggestions
     assert "create" in suggestions
     assert "update" in suggestions
