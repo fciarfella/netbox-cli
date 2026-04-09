@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,8 @@ from .state import ShellState
 
 try:
     from prompt_toolkit import PromptSession
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.completion.base import get_common_complete_suffix
     from prompt_toolkit.document import Document
     from prompt_toolkit.formatted_text import FormattedText
     from prompt_toolkit.history import FileHistory
@@ -26,8 +29,10 @@ try:
     from prompt_toolkit.styles import Style
 except ImportError:  # pragma: no cover - fallback for environments without prompt_toolkit
     PromptSession = None  # type: ignore[assignment]
+    CompleteEvent = None  # type: ignore[assignment]
     Document = None  # type: ignore[assignment]
     KeyBindings = None  # type: ignore[assignment]
+    get_common_complete_suffix = None  # type: ignore[assignment]
 
     class FormattedText(list):  # type: ignore[no-redef]
         """Minimal fallback formatted text container."""
@@ -172,6 +177,10 @@ def build_shell_key_bindings(completer: NetBoxShellCompleter) -> Any:
     def _(event) -> None:  # pragma: no cover - exercised through handle_enter_key
         handle_enter_key(event)
 
+    @bindings.add("tab")
+    def _(event) -> None:  # pragma: no cover - exercised through handle_tab_key
+        handle_tab_key(event, completer)
+
     @bindings.add("?")
     def _(event) -> None:  # pragma: no cover - exercised through handle_context_help
         handle_context_help(event, completer)
@@ -189,6 +198,38 @@ def handle_enter_key(event: Any) -> None:
     buffer.validate_and_handle()
 
 
+def handle_tab_key(event: Any, completer: NetBoxShellCompleter) -> None:
+    """Apply unique completions immediately, otherwise fall back to menu completion."""
+
+    buffer = event.current_buffer
+    complete_state = getattr(buffer, "complete_state", None)
+    if complete_state is not None:
+        buffer.complete_next()
+        return
+
+    _insert_mutation_completion_separator(buffer)
+    completions = get_buffer_completions(completer, buffer)
+    if not completions:
+        event.app.output.bell()
+        return
+
+    if len(completions) == 1:
+        _apply_completion(buffer, completions[0])
+        return
+
+    document = _document_for_completion(getattr(buffer, "document", None), buffer)
+    if get_common_complete_suffix is not None:
+        common_suffix = get_common_complete_suffix(document, completions)
+        if common_suffix:
+            buffer.insert_text(common_suffix)
+            return
+
+    buffer.start_completion(
+        select_first=False,
+        insert_common_part=False,
+    )
+
+
 def accept_selected_completion(buffer: Any) -> bool:
     """Apply the selected completion, if any, instead of executing the buffer."""
 
@@ -200,12 +241,7 @@ def accept_selected_completion(buffer: Any) -> bool:
     if completion is None:
         return False
 
-    buffer.apply_completion(completion)
-    if getattr(completion, "text", "").endswith("="):
-        buffer.start_completion(
-            select_first=False,
-            insert_common_part=False,
-        )
+    _apply_completion(buffer, completion)
     return True
 
 
@@ -217,10 +253,83 @@ def handle_context_help(event: Any, completer: NetBoxShellCompleter) -> None:
         event.app.output.bell()
         return
 
+    _insert_mutation_completion_separator(event.current_buffer)
     event.current_buffer.start_completion(
         select_first=False,
         insert_common_part=False,
     )
+
+
+def get_buffer_completions(
+    completer: NetBoxShellCompleter,
+    buffer: Any,
+) -> list[object]:
+    """Return completion candidates for the current buffer cursor position."""
+
+    document = _document_for_completion(getattr(buffer, "document", None), buffer)
+    complete_event = (
+        CompleteEvent(completion_requested=True)
+        if CompleteEvent is not None
+        else None
+    )
+    return list(completer.get_completions(document, complete_event))
+
+
+def _document_for_completion(document: Any, buffer: Any) -> Any:
+    text_before_cursor = getattr(document, "text_before_cursor", None)
+    if isinstance(text_before_cursor, str):
+        if Document is not None:
+            return Document(
+                text=text_before_cursor,
+                cursor_position=len(text_before_cursor),
+            )
+        return document
+
+    buffer_text = getattr(buffer, "text", "")
+    if Document is not None:
+        return Document(text=buffer_text, cursor_position=len(buffer_text))
+    return type("Document", (), {"text_before_cursor": buffer_text})()
+
+
+def _apply_completion(buffer: Any, completion: object) -> None:
+    buffer.apply_completion(completion)
+    if getattr(completion, "text", "").endswith("="):
+        buffer.start_completion(
+            select_first=False,
+            insert_common_part=False,
+        )
+
+
+def _insert_mutation_completion_separator(buffer: Any) -> None:
+    if not _needs_mutation_completion_separator(buffer):
+        return
+
+    buffer.insert_text(" ")
+
+
+def _needs_mutation_completion_separator(buffer: Any) -> bool:
+    document = getattr(buffer, "document", None)
+    text_before_cursor = getattr(document, "text_before_cursor", None)
+    if not isinstance(text_before_cursor, str):
+        text_before_cursor = getattr(buffer, "text", "")
+
+    if not text_before_cursor or text_before_cursor[-1].isspace():
+        return False
+
+    try:
+        tokens = shlex.split(text_before_cursor)
+    except ValueError:
+        return False
+
+    if not tokens or tokens[0].lower() != "update":
+        return False
+
+    last_token = tokens[-1]
+    if "=" not in last_token or last_token.startswith("-"):
+        return False
+
+    key, value = last_token.split("=", 1)
+    return key.strip() == "id" and bool(value.strip())
 
 
 def get_context_help_suggestions(

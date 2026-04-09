@@ -484,6 +484,17 @@ def test_create_completion_suggests_writable_fields() -> None:
     assert "--dry-run" in texts
 
 
+def test_update_completion_prioritizes_id_before_inline_fields() -> None:
+    completer = NetBoxShellCompleter(
+        state=ShellState(current_path="/dcim/devices"),
+        metadata_provider=StaticMetadataProvider(),
+    )
+
+    texts = completion_texts(completer, "update ")
+
+    assert texts[:3] == ["id=", "--file", "--dry-run"]
+
+
 def test_update_completion_suggests_writable_fields_after_id() -> None:
     completer = NetBoxShellCompleter(
         state=ShellState(current_path="/dcim/devices"),
@@ -494,6 +505,55 @@ def test_update_completion_suggests_writable_fields_after_id() -> None:
 
     assert texts[:4] == ["name=", "status=", "site=", "serial="]
     assert "id=" not in texts
+
+
+def test_update_completion_suggests_writable_fields_immediately_after_id_selector() -> None:
+    completer = NetBoxShellCompleter(
+        state=ShellState(current_path="/dcim/devices"),
+        metadata_provider=StaticMetadataProvider(),
+    )
+
+    texts = completion_texts(completer, "update id=25")
+
+    assert texts[:4] == ["name=", "status=", "site=", "serial="]
+    assert "--dry-run" in texts
+    assert "id=" not in texts
+
+
+def test_create_partial_bare_field_prefix_completes_name() -> None:
+    completer = NetBoxShellCompleter(
+        state=ShellState(current_path="/dcim/devices"),
+        metadata_provider=StaticMetadataProvider(),
+    )
+
+    assert completion_texts(completer, "create nam") == ["name="]
+
+
+def test_update_partial_bare_field_prefix_completes_name() -> None:
+    completer = NetBoxShellCompleter(
+        state=ShellState(current_path="/dcim/devices"),
+        metadata_provider=StaticMetadataProvider(),
+    )
+
+    assert completion_texts(completer, "update id=22 nam") == ["name="]
+
+
+def test_create_partial_bare_field_prefix_completes_status() -> None:
+    completer = NetBoxShellCompleter(
+        state=ShellState(current_path="/dcim/devices"),
+        metadata_provider=StaticMetadataProvider(),
+    )
+
+    assert completion_texts(completer, "create sta") == ["status="]
+
+
+def test_update_partial_bare_field_prefix_completes_site() -> None:
+    completer = NetBoxShellCompleter(
+        state=ShellState(current_path="/dcim/devices"),
+        metadata_provider=StaticMetadataProvider(),
+    )
+
+    assert completion_texts(completer, "update id=22 sit") == ["site="]
 
 
 def test_mutation_completion_does_not_resuggest_used_fields() -> None:
@@ -507,6 +567,15 @@ def test_mutation_completion_does_not_resuggest_used_fields() -> None:
     assert "name=" not in texts
     assert "status=" in texts
     assert "--file" not in texts
+
+
+def test_mutation_partial_field_completion_does_not_resuggest_used_fields() -> None:
+    completer = NetBoxShellCompleter(
+        state=ShellState(current_path="/dcim/devices"),
+        metadata_provider=StaticMetadataProvider(),
+    )
+
+    assert completion_texts(completer, "create name=leaf-01 na") == []
 
 
 def test_mutation_completion_uses_related_write_values() -> None:

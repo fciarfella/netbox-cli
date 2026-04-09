@@ -239,6 +239,8 @@ class CompletionMetadataProvider:
             cached = ()
         else:
             cached = _extract_write_fields(options, method=normalized_method)
+            if not cached and normalized_method == "PATCH":
+                cached = _extract_write_fields(options, method="POST")
 
         self._write_fields_by_key[cache_key] = cached
         return cached

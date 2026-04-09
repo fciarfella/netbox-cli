@@ -273,6 +273,13 @@ class NetBoxShellCompleter(Completer):
             if completion_context.has_file_payload and normalized_field != "id":
                 return
             if command_name == "update" and normalized_field == "id":
+                if not value_prefix.strip():
+                    return
+                yield from self._yield_post_mutation_matches(
+                    endpoint_path,
+                    method,
+                    completion_context,
+                )
                 return
             suggestions = self.metadata_provider.get_write_value_suggestions(
                 endpoint_path,
@@ -281,6 +288,26 @@ class NetBoxShellCompleter(Completer):
                 value_prefix,
             )
             yield from self._yield_value_suggestions(value_prefix, suggestions)
+            return
+
+        if current_token and not current_token.startswith("-"):
+            if command_name == "update" and not completion_context.has_valid_id:
+                update_candidates = [
+                    "id=",
+                    *_mutation_option_candidates(completion_context),
+                ]
+                yield from self._yield_matches(current_token, tuple(update_candidates))
+                return
+
+            if completion_context.has_file_payload:
+                return
+
+            yield from self._yield_post_mutation_matches(
+                endpoint_path,
+                method,
+                completion_context,
+                prefix=current_token,
+            )
             return
 
         if current_token.startswith("-"):
@@ -298,18 +325,11 @@ class NetBoxShellCompleter(Completer):
             yield from self._yield_matches(current_token, tuple(update_candidates))
             return
 
-        if not completion_context.has_file_payload:
-            yield from self._yield_mutation_field_matches(
-                current_token,
-                _prioritized_write_fields(
-                    self.metadata_provider.get_write_fields(endpoint_path, method),
-                    used_fields=completion_context.used_fields,
-                ),
-            )
-
-        yield from self._yield_matches(
-            current_token,
-            _mutation_option_candidates(completion_context),
+        yield from self._yield_post_mutation_matches(
+            endpoint_path,
+            method,
+            completion_context,
+            prefix=current_token,
         )
 
     def _complete_columns(self, prefix: str) -> Iterable[Completion]:
@@ -411,6 +431,28 @@ class NetBoxShellCompleter(Completer):
                 start_position=-len(prefix),
                 display_meta=_mutation_field_meta(field_def),
             )
+
+    def _yield_post_mutation_matches(
+        self,
+        endpoint_path: str,
+        method: str,
+        completion_context: MutationCompletionContext,
+        *,
+        prefix: str = "",
+    ) -> Iterable[Completion]:
+        if not completion_context.has_file_payload:
+            yield from self._yield_mutation_field_matches(
+                prefix,
+                _prioritized_write_fields(
+                    self.metadata_provider.get_write_fields(endpoint_path, method),
+                    used_fields=completion_context.used_fields,
+                ),
+            )
+
+        yield from self._yield_matches(
+            prefix,
+            _mutation_option_candidates(completion_context),
+        )
 
     def _yield_filter_matches(
         self,

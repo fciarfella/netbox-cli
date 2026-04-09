@@ -14,8 +14,10 @@ from netbox_cli.repl.shell import (
     get_context_help_suggestions,
     handle_enter_key,
     handle_context_help,
+    handle_tab_key,
 )
 from netbox_cli.repl.completer import NetBoxShellCompleter
+from netbox_cli.repl.metadata import WriteFieldDefinition
 from netbox_cli.repl.state import ShellState
 
 
@@ -63,6 +65,26 @@ class StaticMetadataProvider:
             ),
         }
     )
+    write_fields: dict[tuple[str, str], tuple[WriteFieldDefinition, ...]] = field(
+        default_factory=lambda: {
+            (
+                "dcim/devices",
+                "POST",
+            ): (
+                WriteFieldDefinition(name="name", required=True, value_type="string"),
+                WriteFieldDefinition(name="status", value_type="select"),
+                WriteFieldDefinition(name="site"),
+            ),
+            (
+                "dcim/devices",
+                "PATCH",
+            ): (
+                WriteFieldDefinition(name="name", required=True, value_type="string"),
+                WriteFieldDefinition(name="status", value_type="select"),
+                WriteFieldDefinition(name="site"),
+            ),
+        }
+    )
 
     def get_apps(self) -> tuple[str, ...]:
         return self.apps
@@ -87,6 +109,41 @@ class StaticMetadataProvider:
         del recent_results
         suggestions = self.value_suggestions.get(
             (endpoint_path.strip("/"), filter_name.strip()),
+            (),
+        )
+        if not prefix:
+            return suggestions
+        normalized_prefix = prefix.casefold()
+        return tuple(
+            suggestion
+            for suggestion in suggestions
+            if suggestion.value.casefold().startswith(normalized_prefix)
+            or (
+                suggestion.label is not None
+                and suggestion.label.casefold().startswith(normalized_prefix)
+            )
+        )
+
+    def get_write_fields(
+        self,
+        endpoint_path: str,
+        method: str,
+    ) -> tuple[WriteFieldDefinition, ...]:
+        return self.write_fields.get(
+            (endpoint_path.strip("/"), method.strip().upper()),
+            (),
+        )
+
+    def get_write_value_suggestions(
+        self,
+        endpoint_path: str,
+        method: str,
+        field_name: str,
+        prefix: str,
+    ) -> tuple[FilterValueSuggestion, ...]:
+        del method
+        suggestions = self.value_suggestions.get(
+            (endpoint_path.strip("/"), field_name.strip()),
             (),
         )
         if not prefix:
@@ -130,14 +187,21 @@ class FakeBuffer:
     def start_completion(self, **kwargs: object) -> None:
         self.start_completion_calls.append(kwargs)
 
+    def complete_next(self) -> None:
+        self.start_completion_calls.append({"complete_next": True})
+
     def apply_completion(self, completion: object) -> None:
         start_position = getattr(completion, "start_position", 0)
         insertion_text = getattr(completion, "text", "")
         prefix_start = len(self.text) + start_position
-        self.text = f"{self.text[:prefix_start]}{insertion_text}"
+        self.text = f"{self.text[:prefix_start]}{insertion_text}{self.text[len(self.text):]}"
         self.document = type("Document", (), {"text_before_cursor": self.text})()
         self.applied_completions.append(completion)
         self.complete_state = None
+
+    def insert_text(self, value: str) -> None:
+        self.text = f"{self.text}{value}"
+        self.document = type("Document", (), {"text_before_cursor": self.text})()
 
     def validate_and_handle(self) -> None:
         self.validate_and_handle_calls += 1
@@ -157,7 +221,11 @@ class FakeCompletionState:
 class FakeEvent:
     def __init__(self, text_before_cursor: str, *, completion: FakeCompletion | None = None) -> None:
         self.current_buffer = FakeBuffer(text_before_cursor)
-        self.current_buffer.complete_state = FakeCompletionState(completion)
+        self.current_buffer.complete_state = (
+            FakeCompletionState(completion)
+            if completion is not None
+            else None
+        )
         self.app = type("App", (), {"output": FakeOutput()})()
 
 
@@ -295,3 +363,67 @@ def test_context_help_reuses_same_candidates_as_the_completer() -> None:
     )
 
     assert question_mark_suggestions == tab_suggestions
+
+
+def test_tab_applies_single_write_field_completion_for_create_prefix() -> None:
+    completer = make_completer(ShellState(current_path="/dcim/devices"))
+    event = FakeEvent("create nam")
+
+    handle_tab_key(event, completer)
+
+    assert event.current_buffer.text == "create name="
+    assert len(event.current_buffer.applied_completions) == 1
+    completion = event.current_buffer.applied_completions[0]
+    assert getattr(completion, "text", None) == "name="
+    assert getattr(completion, "start_position", None) == -3
+    assert event.current_buffer.start_completion_calls == [
+        {"select_first": False, "insert_common_part": False}
+    ]
+
+
+def test_tab_after_update_id_selector_inserts_separator_and_opens_completion_menu() -> None:
+    completer = make_completer(ShellState(current_path="/dcim/devices"))
+    event = FakeEvent("update id=25")
+
+    handle_tab_key(event, completer)
+
+    assert event.current_buffer.text == "update id=25 "
+    assert event.current_buffer.applied_completions == []
+    assert event.current_buffer.start_completion_calls == [
+        {"select_first": False, "insert_common_part": False}
+    ]
+    assert event.app.output.bell_count == 0
+
+
+def test_tab_applies_single_write_field_completion_for_update_prefix() -> None:
+    completer = make_completer(ShellState(current_path="/dcim/devices"))
+    event = FakeEvent("update id=22 nam")
+
+    handle_tab_key(event, completer)
+
+    assert event.current_buffer.text == "update id=22 name="
+    assert len(event.current_buffer.applied_completions) == 1
+    completion = event.current_buffer.applied_completions[0]
+    assert getattr(completion, "text", None) == "name="
+    assert getattr(completion, "start_position", None) == -3
+    assert event.current_buffer.start_completion_calls == [
+        {"select_first": False, "insert_common_part": False}
+    ]
+
+
+def test_tab_applies_single_write_field_completion_for_status_prefix() -> None:
+    completer = make_completer(ShellState(current_path="/dcim/devices"))
+    event = FakeEvent("create sta")
+
+    handle_tab_key(event, completer)
+
+    assert event.current_buffer.text == "create status="
+
+
+def test_tab_applies_single_write_field_completion_for_site_prefix() -> None:
+    completer = make_completer(ShellState(current_path="/dcim/devices"))
+    event = FakeEvent("update id=22 sit")
+
+    handle_tab_key(event, completer)
+
+    assert event.current_buffer.text == "update id=22 site="
