@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.6.1 - 2026-04-09
+
+### netbox-explorer 0.6.1
+
+This patch release completes the `0.6.x` multi-profile work by bringing profile management into the REPL without changing the top-level CLI UX.
+
+### Added
+
+- Added REPL support for `profile list`.
+- Added REPL support for `profile use <name>`.
+- REPL profile switching now updates the prompt immediately, for example from `nb01:/dcim/devices>` to `nb02:/dcim/devices>`.
+
+### Changed
+
+- REPL profile switching now refreshes the active client and in-memory completion metadata without restarting the shell.
+- Metadata caching is now scoped per profile so cached discovery state does not leak across NetBox instances.
+
+### Notes
+
+- `profile add` remains CLI-only as `netbox profile add <name>`.
+- If the REPL is started with `--profile <name>`, interactive `profile use` remains intentionally blocked for that pinned session.
+
 ## 0.6.0 - 2026-04-09
 
 ### netbox-explorer 0.6.0
