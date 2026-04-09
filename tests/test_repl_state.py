@@ -11,9 +11,11 @@ def test_shell_state_uses_cli_defaults() -> None:
             token="abc123",
             default_format="json",
             default_limit=25,
-        )
+        ),
+        profile_name="nb01",
     )
 
+    assert state.profile_name == "nb01"
     assert state.current_path == "/"
     assert state.output_format == "json"
     assert state.limit == 25

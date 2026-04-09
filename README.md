@@ -25,7 +25,7 @@ The shell is a convenience layer on top of it.
 
 ## Features
 
-- explicit configuration with `netbox init`
+- explicit multi-profile configuration with `netbox profile add`, `netbox profile list`, and `netbox profile use`
 - config validation and connectivity checks with `netbox config test`
 - discovery of apps, endpoints, filters, and known choices from the NetBox API
 - `list`, `get`, grouped global `search`, plus minimal `create` and `update`
@@ -62,10 +62,10 @@ python3 -m pip install "git+https://github.com/fciarfella/netbox-cli.git"
 
 ### Install a tagged release from GitHub
 
-Use a tagged release when you want a specific published GitHub version, such as `v0.5.1`.
+Use a tagged release when you want a specific published GitHub version, such as `v0.6.0`.
 
 ```bash
-python3 -m pip install "git+https://github.com/fciarfella/netbox-cli.git@v0.5.1"
+python3 -m pip install "git+https://github.com/fciarfella/netbox-cli.git@v0.6.0"
 ```
 
 ### Install from a local clone
@@ -106,22 +106,56 @@ source .venv/bin/activate
 
 `config.toml` is the primary configuration source for the tool. Environment variables are supported as optional overrides, but normal usage should start with an explicit config file.
 
+The CLI now supports multiple named profiles with a persisted active profile. Resolution order is:
+
+1. explicit `--profile <name>`
+2. persisted `current_profile`
+3. legacy single-profile config fallback
+
 Examples in this README assume you have access to a reachable NetBox instance and a valid API token. DNS plugin examples apply only when that plugin is installed and exposed by your NetBox API.
 
 Create config:
 
 ```bash
-netbox init
+netbox profile add nb01
 ```
 
 Example:
 
 ```bash
-netbox init \
+netbox profile add nb01 \
   --url https://netbox.example.com \
   --token YOUR_TOKEN \
   --default-format table \
   --default-limit 25
+```
+
+List configured profiles and switch the active one:
+
+```bash
+netbox profile list
+netbox profile use nb01
+```
+
+Override the profile for one command or one shell session without changing the active profile:
+
+```bash
+netbox --profile nb02 list dcim/devices
+netbox --profile nb02 shell
+```
+
+Typical multi-profile config:
+
+```toml
+current_profile = "nb01"
+
+[profiles.nb01]
+url = "https://netbox01.example.com"
+token = "abc123"
+
+[profiles.nb02]
+url = "https://netbox02.example.com"
+token = "def456"
 ```
 
 Validate config, token, and connectivity:
@@ -172,6 +206,7 @@ Common first commands:
 
 ```bash
 netbox config test
+netbox profile list
 netbox list
 netbox list dcim
 netbox list dcim/devices
@@ -354,73 +389,73 @@ Launch the shell:
 netbox shell
 ```
 
-The prompt always shows the current path, output format, and row limit:
+The prompt shows the effective profile and current path. The right side still shows the output format and row limit:
 
 ```text
-netbox:/ [table|15]>
+nb01:/>
 ```
 
 Typical session:
 
 ```text
-netbox:/ [table|15]> list
-netbox:/ [table|15]> cd dcim
-netbox:/dcim [table|15]> list
-netbox:/dcim [table|15]> cd devices
-netbox:/dcim/devices [table|15]> filters
-netbox:/dcim/devices [table|15]> list status=active
-netbox:/dcim/devices [table|15]> open 1
+nb01:/> list
+nb01:/> cd dcim
+nb01:/dcim> list
+nb01:/dcim> cd devices
+nb01:/dcim/devices> filters
+nb01:/dcim/devices> list status=active
+nb01:/dcim/devices> open 1
 ```
 
 Change output format and row limit:
 
 ```text
-netbox:/dcim/devices [table|15]> format json
-netbox:/dcim/devices [json|15]> limit 5
-netbox:/dcim/devices [json|5]> get name=router01
+nb01:/dcim/devices> format json
+nb01:/dcim/devices> limit 5
+nb01:/dcim/devices> get name=router01
 ```
 
 Search and open:
 
 ```text
-netbox:/ [table|15]> search router01
-netbox:/ [table|15]> open 2
+nb01:/> search router01
+nb01:/> open 2
 ```
 
 Inside an endpoint context, `list` supports a shorthand search term:
 
 ```text
-netbox:/dcim/devices [table|15]> list web01
+nb01:/dcim/devices> list web01
 ```
 
 This behaves like:
 
 ```text
-netbox:/dcim/devices [table|15]> list q=web01
+nb01:/dcim/devices> list q=web01
 ```
 
 Quoted values work the same way:
 
 ```text
-netbox:/dcim/devices [table|15]> list "router 01"
+nb01:/dcim/devices> list "router 01"
 ```
 
 This behaves like:
 
 ```text
-netbox:/dcim/devices [table|15]> list q="router 01"
+nb01:/dcim/devices> list q="router 01"
 ```
 
 Mixed shorthand and explicit filters also work:
 
 ```text
-netbox:/dcim/devices [table|15]> list web01 status=active
+nb01:/dcim/devices> list web01 status=active
 ```
 
 This behaves like:
 
 ```text
-netbox:/dcim/devices [table|15]> list q=web01 status=active
+nb01:/dcim/devices> list q=web01 status=active
 ```
 
 If `q=...` is already present explicitly, the shell does not add a second `q`.
@@ -428,17 +463,17 @@ If `q=...` is already present explicitly, the shell does not add a second `q`.
 Repeated filters are supported in the shell the same way they are in the CLI:
 
 ```text
-netbox:/dcim/devices [table|15]> list site=dc1 site=lab
-netbox:/dcim/devices [table|15]> list web01 site=dc1 site=lab
+nb01:/dcim/devices> list site=dc1 site=lab
+nb01:/dcim/devices> list web01 site=dc1 site=lab
 ```
 
 In an endpoint context, the shell also supports the same write syntax as the CLI:
 
 ```text
-netbox:/dcim/devices [table|15]> create name=leaf-01 status=active --dry-run
-netbox:/dcim/devices [table|15]> create --file payload.yaml
-netbox:/dcim/devices [table|15]> update id=1490 status=offline --dry-run
-netbox:/dcim/devices [table|15]> update id=1490 --file patch.json
+nb01:/dcim/devices> create name=leaf-01 status=active --dry-run
+nb01:/dcim/devices> create --file payload.yaml
+nb01:/dcim/devices> update id=1490 status=offline --dry-run
+nb01:/dcim/devices> update id=1490 --file patch.json
 ```
 
 Real shell writes show a short human-readable summary before confirmation, then ask before sending POST or PATCH. `--dry-run` only previews the request and does not prompt.

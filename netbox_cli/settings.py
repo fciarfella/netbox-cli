@@ -39,6 +39,20 @@ class LoadedSettings:
     settings: NetBoxSettings
     source: str
     config_path: Path | None = None
+    profile_name: str | None = None
+    current_profile: str | None = None
+    available_profiles: tuple[str, ...] = ()
+    is_legacy_profile: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ConfiguredProfile:
+    """One configured profile exposed to CLI and shell flows."""
+
+    name: str
+    settings: NetBoxSettings
+    is_active: bool = False
+    is_legacy: bool = False
 
 
 @dataclass(frozen=True, slots=True)

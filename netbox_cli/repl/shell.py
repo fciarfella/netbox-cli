@@ -133,7 +133,8 @@ def build_prompt(state: ShellState) -> str:
 def build_left_prompt_text(state: ShellState) -> str:
     """Return the plain left prompt text."""
 
-    return f"netbox:{state.current_path}> "
+    prompt_label = state.profile_name or "netbox"
+    return f"{prompt_label}:{state.current_path}> "
 
 
 def build_right_prompt_text(state: ShellState) -> str:
@@ -145,9 +146,10 @@ def build_right_prompt_text(state: ShellState) -> str:
 def build_left_prompt(state: ShellState) -> Any:
     """Return the styled left prompt fragments for prompt_toolkit."""
 
+    prompt_label = state.profile_name or "netbox"
     return FormattedText(
         [
-            ("class:prompt.shell", "netbox"),
+            ("class:prompt.shell", prompt_label),
             ("class:prompt.separator", ":"),
             ("class:prompt.path", state.current_path),
             ("class:prompt.symbol", "> "),

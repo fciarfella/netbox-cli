@@ -21,7 +21,7 @@ from .mutations import MutationRequest
 from .profiles import get_default_columns
 from .query import QueryResult, RecordResult, get_record_field, stringify_value
 from .search import SearchGroup
-from .settings import AppPaths, LoadedSettings, NetBoxSettings, OutputFormat
+from .settings import AppPaths, ConfiguredProfile, LoadedSettings, NetBoxSettings, OutputFormat
 
 
 def create_console(
@@ -88,10 +88,20 @@ class MutationFieldSummary:
     changed: bool
 
 
-def render_config_created(paths: AppPaths, settings: NetBoxSettings) -> None:
+def render_config_created(
+    paths: AppPaths,
+    settings: NetBoxSettings,
+    *,
+    profile_name: str | None = None,
+    current_profile: str | None = None,
+) -> None:
     console = get_stdout_console()
     table = Table(show_header=False, box=box.SIMPLE)
     table.add_row("Config", str(paths.config_path))
+    if profile_name is not None:
+        table.add_row("Profile", profile_name)
+    if current_profile is not None:
+        table.add_row("Active profile", current_profile)
     table.add_row("URL", settings.url)
     table.add_row("Token", mask_secret(settings.token))
     table.add_row("Cache", str(paths.cache_dir))
@@ -104,6 +114,8 @@ def render_config_test(loaded: LoadedSettings, api_root: dict[str, object]) -> N
     console = get_stdout_console()
     table = Table(show_header=False, box=box.SIMPLE)
     table.add_row("Source", loaded.source)
+    if loaded.profile_name is not None:
+        table.add_row("Profile", loaded.profile_name)
     table.add_row("Config", str(loaded.config_path) if loaded.config_path else "<environment>")
     table.add_row("Apps discovered", ", ".join(sorted(str(key) for key in api_root.keys())) or "<none>")
     console.print(Panel.fit(table, title="Config test passed", border_style="green"))
@@ -117,6 +129,26 @@ def render_paths(paths: AppPaths) -> None:
     table.add_row("History dir", str(paths.history_dir))
     table.add_row("History", str(paths.history_path))
     console.print(Panel.fit(table, title="Runtime paths", border_style="blue"))
+
+
+def render_profiles(profiles: Sequence[ConfiguredProfile]) -> None:
+    console = get_stdout_console()
+    table = Table(title="Configured Profiles", box=box.SIMPLE_HEAVY)
+    table.add_column("ACTIVE", justify="center")
+    table.add_column("PROFILE")
+    table.add_column("URL", overflow="fold")
+    table.add_column("NOTE", overflow="fold")
+
+    for profile in profiles:
+        note = "legacy fallback" if profile.is_legacy else ""
+        table.add_row(
+            "[bold green]*[/]" if profile.is_active else "",
+            profile.name,
+            profile.settings.url,
+            note,
+        )
+
+    console.print(table)
 
 
 def render_apps(

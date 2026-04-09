@@ -16,6 +16,7 @@ ROOT_PATH = "/"
 class ShellState:
     """Mutable state for a shell session."""
 
+    profile_name: str | None = None
     current_path: str = ROOT_PATH
     output_format: OutputFormat = "table"
     limit: int = 15
@@ -23,10 +24,16 @@ class ShellState:
     last_results: list[RecordReference] = field(default_factory=list)
 
     @classmethod
-    def from_settings(cls, settings: NetBoxSettings) -> ShellState:
+    def from_settings(
+        cls,
+        settings: NetBoxSettings,
+        *,
+        profile_name: str | None = None,
+    ) -> ShellState:
         """Build the initial shell state from persisted CLI settings."""
 
         return cls(
+            profile_name=profile_name,
             current_path=ROOT_PATH,
             output_format=settings.default_format,
             limit=settings.default_limit,

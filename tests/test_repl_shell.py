@@ -230,11 +230,11 @@ class FakeEvent:
 
 
 def test_left_prompt_text_reflects_current_path() -> None:
-    state = ShellState(current_path="/dcim/devices")
+    state = ShellState(profile_name="nb01", current_path="/dcim/devices")
 
-    assert build_prompt(state) == "netbox:/dcim/devices> "
-    assert build_left_prompt_text(state) == "netbox:/dcim/devices> "
-    assert _formatted_text_to_plain_text(build_left_prompt(state)) == "netbox:/dcim/devices> "
+    assert build_prompt(state) == "nb01:/dcim/devices> "
+    assert build_left_prompt_text(state) == "nb01:/dcim/devices> "
+    assert _formatted_text_to_plain_text(build_left_prompt(state)) == "nb01:/dcim/devices> "
 
 
 def test_right_prompt_text_reflects_output_format_and_limit() -> None:
@@ -245,15 +245,15 @@ def test_right_prompt_text_reflects_output_format_and_limit() -> None:
 
 
 def test_prompt_helpers_update_after_state_changes() -> None:
-    state = ShellState(current_path="/dcim")
+    state = ShellState(profile_name="nb01", current_path="/dcim")
 
     state.set_path("devices")
     state.set_output_format("json")
     state.set_limit(5)
 
-    assert build_left_prompt_text(state) == "netbox:/dcim/devices> "
+    assert build_left_prompt_text(state) == "nb01:/dcim/devices> "
     assert build_right_prompt_text(state) == "json | 5"
-    assert _formatted_text_to_plain_text(build_left_prompt(state)) == "netbox:/dcim/devices> "
+    assert _formatted_text_to_plain_text(build_left_prompt(state)) == "nb01:/dcim/devices> "
     assert _formatted_text_to_plain_text(build_right_prompt(state)) == "json | 5"
 
 

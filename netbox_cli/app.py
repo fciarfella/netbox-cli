@@ -11,7 +11,13 @@ import typer
 from . import __version__
 from .cache import MetadataCache, clear_metadata_cache
 from .client import NetBoxClient
-from .config import init_config, load_settings, resolve_app_paths
+from .config import (
+    init_config,
+    list_profiles,
+    load_settings,
+    resolve_app_paths,
+    use_profile,
+)
 from .discovery import list_apps, list_endpoints, list_filters, resolve_list_path
 from .errors import ConfigError, NetBoxCLIError
 from .mutations import (
@@ -44,6 +50,7 @@ from .render import (
     render_config_test,
     render_endpoints,
     render_filters,
+    render_profiles,
     render_create_result,
     render_mutation_preview,
     render_paths,
@@ -64,8 +71,10 @@ cli = typer.Typer(
 )
 config_app = typer.Typer(help="Create, inspect, and validate explicit CLI configuration.")
 cache_app = typer.Typer(help="Inspect and clear local metadata cache.")
+profile_app = typer.Typer(help="Manage named NetBox profiles.")
 cli.add_typer(config_app, name="config")
 cli.add_typer(cache_app, name="cache")
+cli.add_typer(profile_app, name="profile")
 
 
 class CLIOutputFormat(str, Enum):
@@ -82,6 +91,7 @@ def version_callback(value: bool) -> None:
 
 @cli.callback()
 def main_callback(
+    ctx: typer.Context,
     version: Annotated[
         bool | None,
         typer.Option(
@@ -91,12 +101,24 @@ def main_callback(
             is_eager=True,
         ),
     ] = None,
+    profile: Annotated[
+        str | None,
+        typer.Option(
+            "--profile",
+            help="Use a named profile for this invocation or shell session without changing the active profile.",
+        ),
+    ] = None,
 ) -> None:
     del version
+    ctx.obj = {"profile_name": profile}
 
 
-@cli.command("init")
-def init_command(
+@profile_app.command("add")
+def profile_add_command(
+    profile_name: Annotated[
+        str,
+        typer.Argument(help="Profile name to create or update."),
+    ],
     url: Annotated[
         str,
         typer.Option(
@@ -132,10 +154,10 @@ def init_command(
     ] = True,
     force: Annotated[
         bool,
-        typer.Option("--force", help="Overwrite an existing config file."),
+        typer.Option("--force", help="Replace any existing config with only this profile."),
     ] = False,
 ) -> None:
-    """Create the explicit user config file."""
+    """Create or update one named profile."""
 
     paths = resolve_app_paths()
     try:
@@ -146,9 +168,11 @@ def init_command(
             default_limit=default_limit,
             timeout_seconds=timeout_seconds,
             verify_tls=verify_tls,
+            profile_name=profile_name,
             force=force,
             app_paths=paths,
         )
+        loaded = load_settings(app_paths=paths)
     except NetBoxCLIError as exc:
         _exit_with_error(exc)
 
@@ -160,21 +184,50 @@ def init_command(
         timeout_seconds=timeout_seconds,
         verify_tls=verify_tls,
     )
-    render_config_created(paths, settings)
-    print_success(f"Config written to {config_path}.")
+    render_config_created(
+        paths,
+        settings,
+        profile_name=profile_name,
+        current_profile=loaded.current_profile or loaded.profile_name,
+    )
+    print_success(f"Profile {profile_name!r} written to {config_path}.")
 
 
-@config_app.command("test")
-def config_test_command() -> None:
-    """Validate config loading, token, and API connectivity."""
+@profile_app.command("list")
+def profile_list_command() -> None:
+    """List configured NetBox profiles and mark the active one."""
 
     paths = resolve_app_paths()
     try:
-        loaded = load_settings(app_paths=paths)
-        client = NetBoxClient(
-            loaded.settings,
-            metadata_cache=MetadataCache(paths.cache_dir),
-        )
+        render_profiles(list_profiles(app_paths=paths))
+    except NetBoxCLIError as exc:
+        _exit_with_error(exc)
+
+
+@profile_app.command("use")
+def profile_use_command(
+    profile_name: Annotated[
+        str,
+        typer.Argument(help="Configured profile name to persist as active."),
+    ],
+) -> None:
+    """Persist the selected profile as the active profile."""
+
+    paths = resolve_app_paths()
+    try:
+        use_profile(profile_name, app_paths=paths)
+    except NetBoxCLIError as exc:
+        _exit_with_error(exc)
+
+    print_success(f"Active profile set to {profile_name!r}.")
+
+
+@config_app.command("test")
+def config_test_command(ctx: typer.Context) -> None:
+    """Validate config loading, token, and API connectivity."""
+
+    try:
+        paths, loaded, client = _build_runtime(profile_name=_requested_profile_name(ctx))
         api_root = client.test_connection()
     except NetBoxCLIError as exc:
         _exit_with_error(exc)
@@ -203,6 +256,7 @@ def cache_clear_command() -> None:
 
 @cli.command("filters")
 def filters_command(
+    ctx: typer.Context,
     endpoint_path: Annotated[
         str,
         typer.Argument(help="Endpoint path in app/endpoint form, for example dcim/devices."),
@@ -215,7 +269,7 @@ def filters_command(
     """Show available filters and known choices for an endpoint."""
 
     try:
-        _, loaded, client = _build_runtime()
+        _, loaded, client = _build_runtime(profile_name=_requested_profile_name(ctx))
         filters = list_filters(client, endpoint_path)
         render_filters(
             filters,
@@ -227,6 +281,7 @@ def filters_command(
 
 @cli.command("list")
 def list_command(
+    ctx: typer.Context,
     path_and_filters: Annotated[
         list[str] | None,
         typer.Argument(
@@ -251,7 +306,7 @@ def list_command(
     selected_columns = parse_column_args(cols)
     raw_args = path_and_filters or []
     try:
-        _, loaded, client = _build_runtime()
+        _, loaded, client = _build_runtime(profile_name=_requested_profile_name(ctx))
         resolved_target = resolve_list_path(client, raw_args[0] if raw_args else None)
         output = _resolve_output_format(output_format, loaded.settings.default_format)
 
@@ -287,6 +342,7 @@ def list_command(
 
 @cli.command("get")
 def get_command(
+    ctx: typer.Context,
     endpoint_path: Annotated[
         str,
         typer.Argument(help="Endpoint path in app/endpoint form."),
@@ -303,7 +359,7 @@ def get_command(
     """Fetch one object from an endpoint using lookup filters."""
 
     try:
-        _, loaded, client = _build_runtime()
+        _, loaded, client = _build_runtime(profile_name=_requested_profile_name(ctx))
         result = get_record(
             client,
             endpoint_path,
@@ -319,6 +375,7 @@ def get_command(
 
 @cli.command("search")
 def search_command(
+    ctx: typer.Context,
     term: Annotated[str, typer.Argument(help="Search term.")],
     output_format: Annotated[
         CLIOutputFormat | None,
@@ -337,7 +394,7 @@ def search_command(
 
     selected_columns = parse_column_args(cols)
     try:
-        _, loaded, client = _build_runtime()
+        _, loaded, client = _build_runtime(profile_name=_requested_profile_name(ctx))
         groups = global_search(
             client,
             term,
@@ -355,6 +412,7 @@ def search_command(
 
 @cli.command("create")
 def create_command(
+    ctx: typer.Context,
     endpoint_path: Annotated[
         str,
         typer.Argument(help="Endpoint path in app/endpoint form."),
@@ -385,7 +443,7 @@ def create_command(
     try:
         request = parse_create_args(endpoint_path, fields or [], payload_file)
         validate_cli_write_safety(yes=yes, dry_run=dry_run)
-        _, loaded, client = _build_runtime()
+        _, loaded, client = _build_runtime(profile_name=_requested_profile_name(ctx))
         validate_create_request_fields(client, request)
         resolved_output = _resolve_output_format(output_format, loaded.settings.default_format)
         if dry_run:
@@ -403,6 +461,7 @@ def create_command(
 
 @cli.command("update")
 def update_command(
+    ctx: typer.Context,
     endpoint_path: Annotated[
         str,
         typer.Argument(help="Endpoint path in app/endpoint form."),
@@ -433,7 +492,7 @@ def update_command(
     try:
         request = parse_update_args(endpoint_path, fields or [], payload_file)
         validate_cli_write_safety(yes=yes, dry_run=dry_run)
-        _, loaded, client = _build_runtime()
+        _, loaded, client = _build_runtime(profile_name=_requested_profile_name(ctx))
         resolved_output = _resolve_output_format(output_format, loaded.settings.default_format)
         if dry_run:
             render_mutation_preview(request, resolved_output)
@@ -455,15 +514,18 @@ def update_command(
 
 
 @cli.command("shell")
-def shell_command() -> None:
+def shell_command(ctx: typer.Context) -> None:
     """Launch the interactive shell with contextual autocomplete."""
 
     try:
-        paths, loaded, client = _build_runtime()
+        paths, loaded, client = _build_runtime(profile_name=_requested_profile_name(ctx))
         launch_shell(
             client,
             history_path=paths.history_path,
-            initial_state=ShellState.from_settings(loaded.settings),
+            initial_state=ShellState.from_settings(
+                loaded.settings,
+                profile_name=loaded.profile_name,
+            ),
         )
     except NetBoxCLIError as exc:
         _exit_with_error(exc)
@@ -558,14 +620,29 @@ def _validate_context_list_usage(
         )
 
 
-def _build_runtime() -> tuple[AppPaths, LoadedSettings, NetBoxClient]:
+def _build_runtime(
+    profile_name: str | None = None,
+) -> tuple[AppPaths, LoadedSettings, NetBoxClient]:
     paths = resolve_app_paths()
-    loaded = load_settings(app_paths=paths)
+    loaded = load_settings(app_paths=paths, profile_name=profile_name)
     client = NetBoxClient(
         loaded.settings,
         metadata_cache=MetadataCache(paths.cache_dir),
     )
     return paths, loaded, client
+
+
+def _requested_profile_name(ctx: typer.Context | None) -> str | None:
+    if ctx is None:
+        return None
+    obj = getattr(ctx, "obj", None)
+    if not isinstance(obj, dict):
+        return None
+    profile_name = obj.get("profile_name")
+    if not isinstance(profile_name, str):
+        return None
+    normalized = profile_name.strip()
+    return normalized or None
 
 
 def _resolve_output_format(

@@ -64,7 +64,7 @@ def patch_runtime(  # type: ignore[no-untyped-def]
     monkeypatch.setattr(
         app_module,
         "_build_runtime",
-        lambda: (
+        lambda profile_name=None: (
             AppPaths(
                 config_dir=Path("/tmp/config"),
                 config_path=Path("/tmp/config/config.toml"),
@@ -87,7 +87,7 @@ def patch_runtime(  # type: ignore[no-untyped-def]
 
 
 def test_package_import_exposes_version() -> None:
-    assert __version__ == "0.5.1"
+    assert __version__ == "0.6.0"
 
 
 def test_cli_help_bootstraps(cli_runner) -> None:
@@ -98,11 +98,14 @@ def test_cli_help_bootstraps(cli_runner) -> None:
     assert "list" in result.stdout
     assert "create" in result.stdout
     assert "update" in result.stdout
-    assert "init" in result.stdout
+    assert "profile" in result.stdout
     assert "cache" in result.stdout
     assert "shell" in result.stdout
     assert "\n│ apps" not in result.stdout
     assert "\n│ endpoints" not in result.stdout
+    assert "\n│ init" not in result.stdout
+    assert "\n│ profiles" not in result.stdout
+    assert "\n│ use" not in result.stdout
 
 
 def test_cli_version_flag_bootstraps(cli_runner) -> None:
@@ -117,6 +120,15 @@ def test_config_subcommand_help_bootstraps(cli_runner) -> None:
 
     assert result.exit_code == 0
     assert "test" in result.stdout
+
+
+def test_profile_subcommand_help_bootstraps(cli_runner) -> None:
+    result = cli_runner.invoke(cli, ["profile", "--help"])
+
+    assert result.exit_code == 0
+    assert "add" in result.stdout
+    assert "list" in result.stdout
+    assert "use" in result.stdout
 
 
 def test_cache_subcommand_help_bootstraps(cli_runner) -> None:
@@ -151,7 +163,7 @@ def test_shell_command_launches_repl(cli_runner, monkeypatch, tmp_path: Path) ->
     monkeypatch.setattr(
         app_module,
         "_build_runtime",
-        lambda: (
+        lambda profile_name=None: (
             AppPaths(
                 config_dir=tmp_path / "config",
                 config_path=tmp_path / "config" / "config.toml",
@@ -162,6 +174,9 @@ def test_shell_command_launches_repl(cli_runner, monkeypatch, tmp_path: Path) ->
             LoadedSettings(
                 settings=NetBoxSettings(url="https://netbox.example.com", token="abc"),
                 source="file",
+                profile_name="nb01",
+                current_profile="nb01",
+                available_profiles=("nb01",),
             ),
             object(),
         ),
@@ -179,6 +194,142 @@ def test_shell_command_launches_repl(cli_runner, monkeypatch, tmp_path: Path) ->
     assert result.exit_code == 0
     assert launched["history_path"] == tmp_path / "state" / "shell-history"
     assert launched["initial_state"].current_path == "/"  # type: ignore[union-attr]
+    assert launched["initial_state"].profile_name == "nb01"  # type: ignore[union-attr]
+
+
+def test_cli_profile_override_is_passed_to_runtime(cli_runner, monkeypatch) -> None:
+    from netbox_cli import app as app_module
+
+    seen: dict[str, object] = {}
+
+    def fake_build_runtime(profile_name=None):  # type: ignore[no-untyped-def]
+        seen["profile_name"] = profile_name
+        return (
+            AppPaths(
+                config_dir=Path("/tmp/config"),
+                config_path=Path("/tmp/config/config.toml"),
+                cache_dir=Path("/tmp/cache"),
+                history_dir=Path("/tmp/state"),
+                history_path=Path("/tmp/state/shell-history"),
+            ),
+            LoadedSettings(
+                settings=NetBoxSettings(url="https://netbox.example.com", token="abc"),
+                source="file",
+                profile_name="nb02",
+                current_profile="nb01",
+                available_profiles=("nb01", "nb02"),
+            ),
+            object(),
+        )
+
+    monkeypatch.setattr(app_module, "_build_runtime", fake_build_runtime)
+    monkeypatch.setattr(app_module, "list_apps", lambda client: ["dcim", "ipam"])
+
+    result = cli_runner.invoke(cli, ["--profile", "nb02", "list", "--format", "json"])
+
+    assert result.exit_code == 0
+    assert seen["profile_name"] == "nb02"
+    assert json.loads(result.stdout) == ["dcim", "ipam"]
+
+
+def test_profile_add_command_creates_named_profile(cli_runner, monkeypatch, temp_app_paths: AppPaths) -> None:
+    from netbox_cli import app as app_module
+    from netbox_cli.config import load_settings
+
+    monkeypatch.setattr(app_module, "resolve_app_paths", lambda: temp_app_paths)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "profile",
+            "add",
+            "nb01",
+            "--url",
+            "https://netbox01.example.com",
+            "--token",
+            "abc123",
+        ],
+    )
+
+    loaded = load_settings(app_paths=temp_app_paths)
+
+    assert result.exit_code == 0
+    assert loaded.profile_name == "nb01"
+    assert loaded.current_profile == "nb01"
+
+
+def test_profile_list_command_lists_configured_profiles(cli_runner, monkeypatch, temp_app_paths: AppPaths) -> None:
+    from netbox_cli import app as app_module
+    from netbox_cli.config import init_config
+
+    monkeypatch.setattr(app_module, "resolve_app_paths", lambda: temp_app_paths)
+    init_config(
+        url="https://netbox01.example.com",
+        token="token-1",
+        profile_name="nb01",
+        app_paths=temp_app_paths,
+    )
+    init_config(
+        url="https://netbox02.example.com",
+        token="token-2",
+        profile_name="nb02",
+        app_paths=temp_app_paths,
+    )
+
+    result = cli_runner.invoke(cli, ["profile", "list"])
+
+    assert result.exit_code == 0
+    assert "nb01" in result.stdout
+    assert "nb02" in result.stdout
+    assert "*" in result.stdout
+
+
+def test_profile_use_command_switches_active_profile(cli_runner, monkeypatch, temp_app_paths: AppPaths) -> None:
+    from netbox_cli import app as app_module
+    from netbox_cli.config import init_config, load_settings
+
+    monkeypatch.setattr(app_module, "resolve_app_paths", lambda: temp_app_paths)
+    init_config(
+        url="https://netbox01.example.com",
+        token="token-1",
+        profile_name="nb01",
+        app_paths=temp_app_paths,
+    )
+    init_config(
+        url="https://netbox02.example.com",
+        token="token-2",
+        profile_name="nb02",
+        app_paths=temp_app_paths,
+    )
+
+    result = cli_runner.invoke(cli, ["profile", "use", "nb02"])
+    loaded = load_settings(app_paths=temp_app_paths)
+
+    assert result.exit_code == 0
+    assert loaded.current_profile == "nb02"
+    assert loaded.profile_name == "nb02"
+
+
+def test_profile_use_command_rejects_unknown_profile(
+    cli_runner,
+    monkeypatch,
+    temp_app_paths: AppPaths,
+) -> None:
+    from netbox_cli import app as app_module
+    from netbox_cli.config import init_config
+
+    monkeypatch.setattr(app_module, "resolve_app_paths", lambda: temp_app_paths)
+    init_config(
+        url="https://netbox01.example.com",
+        token="token-1",
+        profile_name="nb01",
+        app_paths=temp_app_paths,
+    )
+
+    result = cli_runner.invoke(cli, ["profile", "use", "missing"])
+
+    assert result.exit_code != 0
+    assert "Profile 'missing' is not configured." in result.stderr
 
 
 def test_legacy_exploration_commands_are_unavailable(cli_runner) -> None:
@@ -191,13 +342,26 @@ def test_legacy_exploration_commands_are_unavailable(cli_runner) -> None:
     assert "No such command 'endpoints'" in endpoints_result.output
 
 
+def test_removed_temporary_profile_commands_are_unavailable(cli_runner) -> None:
+    init_result = cli_runner.invoke(cli, ["init"])
+    profiles_result = cli_runner.invoke(cli, ["profiles"])
+    use_result = cli_runner.invoke(cli, ["use", "nb01"])
+
+    assert init_result.exit_code != 0
+    assert "No such command 'init'" in init_result.output
+    assert profiles_result.exit_code != 0
+    assert "No such command 'profiles'" in profiles_result.output
+    assert use_result.exit_code != 0
+    assert "No such command 'use'" in use_result.output
+
+
 def test_list_command_without_path_renders_apps(cli_runner, monkeypatch) -> None:
     from netbox_cli import app as app_module
 
     monkeypatch.setattr(
         app_module,
         "_build_runtime",
-        lambda: (
+        lambda profile_name=None: (
             AppPaths(
                 config_dir=Path("/tmp/config"),
                 config_path=Path("/tmp/config/config.toml"),
@@ -226,7 +390,7 @@ def test_list_command_with_app_path_renders_endpoints(cli_runner, monkeypatch) -
     monkeypatch.setattr(
         app_module,
         "_build_runtime",
-        lambda: (
+        lambda profile_name=None: (
             AppPaths(
                 config_dir=Path("/tmp/config"),
                 config_path=Path("/tmp/config/config.toml"),
@@ -265,7 +429,7 @@ def test_list_command_with_endpoint_path_renders_records(cli_runner, monkeypatch
     monkeypatch.setattr(
         app_module,
         "_build_runtime",
-        lambda: (
+        lambda profile_name=None: (
             AppPaths(
                 config_dir=Path("/tmp/config"),
                 config_path=Path("/tmp/config/config.toml"),
@@ -309,7 +473,7 @@ def test_list_command_rejects_unknown_path(cli_runner, monkeypatch) -> None:
     monkeypatch.setattr(
         app_module,
         "_build_runtime",
-        lambda: (
+        lambda profile_name=None: (
             AppPaths(
                 config_dir=Path("/tmp/config"),
                 config_path=Path("/tmp/config/config.toml"),
@@ -347,7 +511,7 @@ def test_list_command_renders_json(cli_runner, monkeypatch) -> None:
     monkeypatch.setattr(
         app_module,
         "_build_runtime",
-        lambda: (
+        lambda profile_name=None: (
             AppPaths(
                 config_dir=Path("/tmp/config"),
                 config_path=Path("/tmp/config/config.toml"),
@@ -392,7 +556,7 @@ def test_list_command_rejects_incomplete_filter_locally(cli_runner, monkeypatch)
     monkeypatch.setattr(
         app_module,
         "_build_runtime",
-        lambda: (
+        lambda profile_name=None: (
             AppPaths(
                 config_dir=Path("/tmp/config"),
                 config_path=Path("/tmp/config/config.toml"),
@@ -428,7 +592,7 @@ def test_list_command_passes_cols_override(cli_runner, monkeypatch) -> None:
     monkeypatch.setattr(
         app_module,
         "_build_runtime",
-        lambda: (
+        lambda profile_name=None: (
             AppPaths(
                 config_dir=Path("/tmp/config"),
                 config_path=Path("/tmp/config/config.toml"),
@@ -484,7 +648,7 @@ def test_list_command_normalizes_cols_whitespace(cli_runner, monkeypatch) -> Non
     monkeypatch.setattr(
         app_module,
         "_build_runtime",
-        lambda: (
+        lambda profile_name=None: (
             AppPaths(
                 config_dir=Path("/tmp/config"),
                 config_path=Path("/tmp/config/config.toml"),
@@ -532,7 +696,7 @@ def test_list_command_rejects_invalid_cols_value(cli_runner, monkeypatch) -> Non
     monkeypatch.setattr(
         app_module,
         "_build_runtime",
-        lambda: (
+        lambda profile_name=None: (
             AppPaths(
                 config_dir=Path("/tmp/config"),
                 config_path=Path("/tmp/config/config.toml"),
@@ -565,7 +729,7 @@ def test_list_command_preserves_repeated_filters(cli_runner, monkeypatch) -> Non
     monkeypatch.setattr(
         app_module,
         "_build_runtime",
-        lambda: (
+        lambda profile_name=None: (
             AppPaths(
                 config_dir=Path("/tmp/config"),
                 config_path=Path("/tmp/config/config.toml"),
@@ -610,7 +774,7 @@ def test_list_command_preserves_repeated_filters_with_bare_term(cli_runner, monk
     monkeypatch.setattr(
         app_module,
         "_build_runtime",
-        lambda: (
+        lambda profile_name=None: (
             AppPaths(
                 config_dir=Path("/tmp/config"),
                 config_path=Path("/tmp/config/config.toml"),
@@ -654,7 +818,7 @@ def test_list_command_supports_bare_search_term(cli_runner, monkeypatch) -> None
     monkeypatch.setattr(
         app_module,
         "_build_runtime",
-        lambda: (
+        lambda profile_name=None: (
             AppPaths(
                 config_dir=Path("/tmp/config"),
                 config_path=Path("/tmp/config/config.toml"),
@@ -695,7 +859,7 @@ def test_list_command_joins_multiple_bare_terms_into_q(cli_runner, monkeypatch) 
     monkeypatch.setattr(
         app_module,
         "_build_runtime",
-        lambda: (
+        lambda profile_name=None: (
             AppPaths(
                 config_dir=Path("/tmp/config"),
                 config_path=Path("/tmp/config/config.toml"),
@@ -736,7 +900,7 @@ def test_list_command_mixes_bare_term_with_explicit_filters(cli_runner, monkeypa
     monkeypatch.setattr(
         app_module,
         "_build_runtime",
-        lambda: (
+        lambda profile_name=None: (
             AppPaths(
                 config_dir=Path("/tmp/config"),
                 config_path=Path("/tmp/config/config.toml"),
@@ -780,7 +944,7 @@ def test_list_command_does_not_duplicate_explicit_q(cli_runner, monkeypatch) -> 
     monkeypatch.setattr(
         app_module,
         "_build_runtime",
-        lambda: (
+        lambda profile_name=None: (
             AppPaths(
                 config_dir=Path("/tmp/config"),
                 config_path=Path("/tmp/config/config.toml"),
@@ -823,7 +987,7 @@ def test_get_command_rejects_repeated_lookup_filters(cli_runner, monkeypatch) ->
     monkeypatch.setattr(
         app_module,
         "_build_runtime",
-        lambda: (
+        lambda profile_name=None: (
             AppPaths(
                 config_dir=Path("/tmp/config"),
                 config_path=Path("/tmp/config/config.toml"),
@@ -851,7 +1015,7 @@ def test_get_command_renders_json(cli_runner, monkeypatch) -> None:
     monkeypatch.setattr(
         app_module,
         "_build_runtime",
-        lambda: (
+        lambda profile_name=None: (
             AppPaths(
                 config_dir=Path("/tmp/config"),
                 config_path=Path("/tmp/config/config.toml"),
@@ -1501,7 +1665,7 @@ def test_search_command_renders_json(cli_runner, monkeypatch) -> None:
     monkeypatch.setattr(
         app_module,
         "_build_runtime",
-        lambda: (
+        lambda profile_name=None: (
             AppPaths(
                 config_dir=Path("/tmp/config"),
                 config_path=Path("/tmp/config/config.toml"),
@@ -1545,7 +1709,7 @@ def test_search_command_passes_cols_override(cli_runner, monkeypatch) -> None:
     monkeypatch.setattr(
         app_module,
         "_build_runtime",
-        lambda: (
+        lambda profile_name=None: (
             AppPaths(
                 config_dir=Path("/tmp/config"),
                 config_path=Path("/tmp/config/config.toml"),
